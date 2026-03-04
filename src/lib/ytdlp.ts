@@ -1,0 +1,811 @@
+import { spawn, spawnSync } from "child_process";
+import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "fs";
+import { join } from "path";
+import { analyzeWithInstaloader } from "./instaloader";
+
+// ─── Cookie Handling ──────────────────────────────────────────────────────────
+// Priority:
+//   1. cookies.txt file in the project root (best — no locking issues)
+//   2. Browser cookies (tries Firefox first, then others)
+//
+// To export cookies.txt:
+//   Install "Get cookies.txt LOCALLY" Chrome extension, go to instagram.com
+//   while logged in, click the extension, export → save as cookies.txt
+//   in the project root (d:\django\media_downloader\cookies.txt)
+
+import { resolve } from "path";
+
+const COOKIES_FILE = resolve(process.cwd(), "cookies.txt");
+
+function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
+    // 1. Prefer cookies.txt file (always works, no DB locking)
+    if (existsSync(COOKIES_FILE)) {
+        console.log("Using cookies from cookies.txt file");
+        return ["--cookies", COOKIES_FILE];
+    }
+
+    // 2. Try browser cookies (Firefox first — less likely to be locked)
+    const browsers = ["firefox", "edge", "brave", "chrome", "chromium", "opera"];
+    for (const browser of browsers) {
+        try {
+            const check = spawnSync("yt-dlp", ["--cookies-from-browser", browser, "--version"], {
+                timeout: 3000, stdio: "pipe",
+            });
+            if (check.status === 0) {
+                console.log(`Using browser cookies from: ${browser}`);
+                return ["--cookies-from-browser", browser];
+            }
+        } catch { continue; }
+    }
+
+    console.log("No cookies available, proceeding without authentication.");
+    return [];
+}
+
+function isCookieError(errorMsg: string): boolean {
+    return errorMsg.includes("Could not copy") ||
+        errorMsg.includes("cookie") ||
+        errorMsg.includes("Cookie") ||
+        errorMsg.includes("unable to copy cookie");
+}
+
+// ─── Platform Detection ───────────────────────────────────────────────────────
+
+export type Platform = "youtube" | "instagram" | "twitter" | "facebook" | "unknown";
+
+const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
+    {
+        platform: "youtube",
+        regex: /(?:youtube\.com\/(?:watch|shorts|embed|live)|youtu\.be\/)/i,
+    },
+    {
+        platform: "instagram",
+        regex: /(?:instagram\.com\/(?:p|reel|reels|tv|stories)\/)/i,
+    },
+    {
+        platform: "twitter",
+        regex: /(?:(?:twitter|x)\.com\/\w+\/status\/)/i,
+    },
+    {
+        platform: "facebook",
+        regex: /(?:facebook\.com\/(?:(?:.*\/)?(?:videos|posts|watch|reel|photo)|reel\/|share\/|watch\/)|fb\.watch\/)/i,
+    },
+];
+
+export function detectPlatform(url: string): Platform {
+    for (const { platform, regex } of PLATFORM_PATTERNS) {
+        if (regex.test(url)) return platform;
+    }
+    return "unknown";
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface MediaFormat {
+    format_id: string;
+    quality: string;
+    ext: string;
+    filesize: number | null;
+    resolution: string | null;
+    vcodec: string | null;
+    acodec: string | null;
+    height: number | null;
+    fps: number | null;
+}
+
+export interface MediaItem {
+    type: "video" | "photo";
+    title: string;
+    thumbnail: string;
+    duration: number | null;
+    formats: MediaFormat[];
+    direct_url: string | null; // For photos: direct image URL
+    index: number;
+}
+
+export interface MediaInfo {
+    platform: Platform;
+    title: string;
+    uploader: string;
+    items: MediaItem[];
+    original_url: string;
+}
+
+// ─── Analyze URL ──────────────────────────────────────────────────────────────
+// Hybrid routing: each platform uses its best tool, with fallbacks.
+//   YouTube  → yt-dlp
+//   Instagram→ instaloader (photos/carousels) → yt-dlp fallback (videos)
+//   Twitter/X→ yt-dlp (videos only)
+//   Facebook → yt-dlp (videos only)
+
+export async function analyzeUrl(url: string): Promise<MediaInfo> {
+    const platform = detectPlatform(url);
+
+    // ── YouTube: yt-dlp is the best (and only) tool ──
+    if (platform === "youtube") {
+        return analyzeWithYtDlp(url, platform);
+    }
+
+    // ── Instagram: try instaloader first (best for photos + carousels) ──
+    if (platform === "instagram") {
+        // Stories can't be handled by instaloader without login credentials;
+        // route them directly through yt-dlp which handles public stories fine
+        const isStory = /instagram\.com\/stories\//i.test(url);
+
+        if (!isStory) {
+            let instaloaderError = "";
+            try {
+                const result = await analyzeWithInstaloader(url, platform);
+                if (result.items.length > 0) return result;
+                instaloaderError = "instaloader returned 0 items";
+            } catch (err) {
+                instaloaderError = err instanceof Error ? err.message : "instaloader failed";
+                console.error("instaloader error:", instaloaderError);
+            }
+
+            // Fallback to yt-dlp (handles Instagram videos/reels better)
+            try {
+                return await analyzeWithYtDlp(url, platform);
+            } catch (ytdlpError) {
+                const msg = ytdlpError instanceof Error ? ytdlpError.message : "";
+                console.error("yt-dlp also failed for Instagram:", msg);
+                throw new Error(
+                    `Could not extract media from this Instagram post. ` +
+                    `instaloader: ${instaloaderError}. yt-dlp: ${msg}. ` +
+                    `The post may be private or require login.`
+                );
+            }
+        }
+
+        // Stories → yt-dlp directly
+        try {
+            return await analyzeWithYtDlp(url, platform);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "";
+            throw new Error(
+                `Could not download this Instagram story. It may be expired, private, or require login. (${msg})`
+            );
+        }
+    }
+
+    // ── Twitter/X & Facebook: yt-dlp only (videos) ──
+    if (platform === "twitter" || platform === "facebook") {
+        return analyzeWithYtDlp(url, platform);
+    }
+
+    // ── Unknown platform ──
+    throw new Error("Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook.");
+}
+
+// ─── Analyze with yt-dlp ──────────────────────────────────────────────────────
+
+async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = true): Promise<MediaInfo> {
+    return new Promise((resolve, reject) => {
+        const args = [
+            ...(withCookies ? getCookieArgs("yt-dlp") : []),
+            "--dump-single-json", // Single JSON even for playlists
+            "--no-warnings",
+            "--no-check-certificates",
+            url,
+        ];
+
+        const proc = spawn("yt-dlp", args);
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+        proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+        proc.on("close", (code) => {
+            if (code !== 0) {
+                // If the error is cookie-related and we used cookies, retry without them
+                if (withCookies && isCookieError(stderr)) {
+                    console.log("yt-dlp cookie error detected, retrying without cookies...");
+                    analyzeWithYtDlp(url, platform, false).then(resolve, reject);
+                    return;
+                }
+                reject(new Error(stderr || `yt-dlp exited with code ${code}`));
+                return;
+            }
+
+            try {
+                const data = JSON.parse(stdout);
+                const items: MediaItem[] = [];
+
+                // Check if it's a playlist (carousel)
+                if (data.entries && Array.isArray(data.entries)) {
+                    data.entries.forEach((entry: Record<string, unknown>, idx: number) => {
+                        const item = parseYtDlpEntry(entry, idx);
+                        if (item) items.push(item);
+                    });
+                } else {
+                    // Single item
+                    const item = parseYtDlpEntry(data, 0);
+                    if (item) items.push(item);
+                }
+
+                resolve({
+                    platform,
+                    title: data.title || data.playlist_title || "Untitled",
+                    uploader: data.uploader || data.channel || data.playlist_uploader || "Unknown",
+                    items,
+                    original_url: url,
+                });
+            } catch {
+                reject(new Error("Failed to parse yt-dlp output"));
+            }
+        });
+
+        proc.on("error", (err) => {
+            reject(new Error(`Failed to run yt-dlp: ${err.message}. Is yt-dlp installed?`));
+        });
+
+        setTimeout(() => { proc.kill(); reject(new Error("yt-dlp timed out")); }, 30000);
+    });
+}
+
+function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaItem | null {
+    const formats: MediaFormat[] = ((data.formats as Record<string, unknown>[]) || [])
+        .filter((f) => f.vcodec && f.vcodec !== "none")
+        .map((f) => ({
+            format_id: String(f.format_id || ""),
+            quality: buildQualityLabel(f),
+            ext: String(f.ext || "mp4"),
+            filesize: (f.filesize as number) || (f.filesize_approx as number) || null,
+            resolution: f.resolution ? String(f.resolution) : null,
+            vcodec: f.vcodec ? String(f.vcodec) : null,
+            acodec: f.acodec ? String(f.acodec) : null,
+            height: (f.height as number) || null,
+            fps: (f.fps as number) || null,
+        }))
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+
+    // Deduplicate by height
+    const seen = new Set<number>();
+    const uniqueFormats = formats.filter((f) => {
+        if (!f.height || seen.has(f.height)) return false;
+        seen.add(f.height);
+        return true;
+    });
+
+    const finalFormats = uniqueFormats.length > 0 ? uniqueFormats : formats.length > 0 ? [formats[0]] : [];
+
+    return {
+        type: finalFormats.length > 0 ? "video" : "photo",
+        title: String(data.title || data.description || "Untitled"),
+        thumbnail: String(data.thumbnail || ""),
+        duration: (data.duration as number) || null,
+        formats: finalFormats,
+        direct_url: finalFormats.length === 0 ? String(data.url || data.thumbnail || "") : null,
+        index,
+    };
+}
+
+function buildQualityLabel(f: Record<string, unknown>): string {
+    const height = f.height as number;
+    if (!height) return String(f.format_note || f.resolution || "Unknown");
+    if (height >= 2160) return "4K";
+    if (height >= 1440) return "1440p";
+    if (height >= 1080) return "1080p";
+    if (height >= 720) return "720p";
+    if (height >= 480) return "480p";
+    if (height >= 360) return "360p";
+    if (height >= 240) return "240p";
+    return `${height}p`;
+}
+
+// ─── Analyze with gallery-dl ──────────────────────────────────────────────────
+
+async function analyzeWithGalleryDl(url: string, platform: Platform, withCookies = true): Promise<MediaInfo> {
+    return new Promise((resolve, reject) => {
+        // -j outputs a single JSON array with all entries
+        const args = [...(withCookies ? getCookieArgs("gallery-dl") : []), "-j", url];
+        const proc = spawn("gallery-dl", args);
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+        proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+        proc.on("close", (code) => {
+            console.log("gallery-dl exit code:", code);
+            console.log("gallery-dl stderr:", stderr);
+            console.log("gallery-dl stdout length:", stdout.length);
+
+            if (code !== 0 && !stdout.trim()) {
+                // If cookie-related error, retry without cookies
+                if (withCookies && isCookieError(stderr)) {
+                    console.log("gallery-dl cookie error detected, retrying without cookies...");
+                    analyzeWithGalleryDl(url, platform, false).then(resolve, reject);
+                    return;
+                }
+                reject(new Error(stderr || `gallery-dl exited with code ${code}`));
+                return;
+            }
+
+            try {
+                const items: MediaItem[] = [];
+                let postTitle = "Post";
+                let postUploader = "Unknown";
+
+                // gallery-dl -j outputs a single JSON array: [[type, data], [type, data], ...]
+                let entries: unknown[];
+                try {
+                    entries = JSON.parse(stdout.trim());
+                } catch {
+                    // Sometimes gallery-dl outputs multiple JSON arrays on separate lines
+                    entries = [];
+                    const lines = stdout.trim().split("\n").filter(Boolean);
+                    for (const line of lines) {
+                        try {
+                            const parsed = JSON.parse(line.trim());
+                            if (Array.isArray(parsed)) {
+                                // Could be the outer array itself or individual entries
+                                if (parsed.length > 0 && Array.isArray(parsed[0])) {
+                                    entries.push(...parsed);
+                                } else {
+                                    entries.push(parsed);
+                                }
+                            }
+                        } catch {
+                            continue;
+                        }
+                    }
+                }
+
+                if (!Array.isArray(entries)) {
+                    reject(new Error("gallery-dl returned unexpected format"));
+                    return;
+                }
+
+                // Process each entry
+                for (const entry of entries) {
+                    if (!Array.isArray(entry)) continue;
+                    const arr = entry as unknown[];
+
+                    // Directory/category entries: [number, metadata]
+                    if (typeof arr[0] === "number" && arr.length >= 2) {
+                        const meta = arr[1] as Record<string, unknown>;
+                        if (meta) {
+                            postUploader = String(meta.username || meta.owner || meta.user || meta.uploader || meta.fullname || postUploader);
+                            const desc = String(meta.description || meta.title || meta.caption || "");
+                            if (desc && desc !== "undefined" && desc !== "null") {
+                                postTitle = desc.length > 100 ? desc.substring(0, 100) + "..." : desc;
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Media entries: [url_string, metadata]
+                    if (typeof arr[0] === "string" && arr.length >= 2) {
+                        const mediaUrl = arr[0] as string;
+                        const meta = (arr[1] || {}) as Record<string, unknown>;
+
+                        // Determine media type from extension
+                        const extension = String(meta.extension || "").toLowerCase();
+                        const filename = String(meta.filename || "").toLowerCase();
+                        const fullUrl = mediaUrl.toLowerCase();
+
+                        const videoExts = ["mp4", "webm", "mov", "avi", "mkv", "m4v"];
+                        const photoExts = ["jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "bmp"];
+
+                        const isVideo = videoExts.includes(extension) ||
+                            videoExts.some(e => fullUrl.includes(`.${e}`)) ||
+                            videoExts.some(e => filename.endsWith(`.${e}`));
+                        const isPhoto = photoExts.includes(extension) ||
+                            photoExts.some(e => fullUrl.includes(`.${e}`)) ||
+                            photoExts.some(e => filename.endsWith(`.${e}`));
+
+                        // If we can't determine type, try to infer from URL patterns
+                        const isMediaFile = isVideo || isPhoto ||
+                            mediaUrl.includes("scontent") || // Instagram CDN
+                            mediaUrl.includes("pbs.twimg.com") || // Twitter CDN
+                            mediaUrl.includes("fbcdn"); // Facebook CDN
+
+                        if (!isMediaFile) continue;
+
+                        // Default to photo if not clearly video
+                        const mediaType = isVideo ? "video" : "photo";
+
+                        // Extract uploader from metadata
+                        if (postUploader === "Unknown") {
+                            postUploader = String(meta.username || meta.owner || meta.user || meta.fullname || "Unknown");
+                        }
+                        if (postTitle === "Post") {
+                            const desc = String(meta.description || meta.title || meta.caption || "");
+                            if (desc && desc !== "undefined" && desc !== "null") {
+                                postTitle = desc.length > 100 ? desc.substring(0, 100) + "..." : desc;
+                            }
+                        }
+
+                        items.push({
+                            type: mediaType,
+                            title: String(meta.description || meta.title || `Item ${items.length + 1}`).substring(0, 100),
+                            thumbnail: String(meta.thumbnail || meta.display_url || (mediaType === "photo" ? mediaUrl : "") || ""),
+                            duration: (meta.duration as number) || null,
+                            formats: isVideo
+                                ? [{
+                                    format_id: "best",
+                                    quality: meta.height ? buildQualityLabel({ height: meta.height }) : "Best",
+                                    ext: extension || "mp4",
+                                    filesize: (meta.filesize as number) || null,
+                                    resolution: meta.width && meta.height ? `${meta.width}x${meta.height}` : null,
+                                    vcodec: null,
+                                    acodec: null,
+                                    height: (meta.height as number) || null,
+                                    fps: null,
+                                }]
+                                : [],
+                            direct_url: mediaUrl,
+                            index: items.length,
+                        });
+                    }
+                }
+
+                console.log(`gallery-dl parsed ${items.length} items for ${url}`);
+
+                resolve({
+                    platform,
+                    title: postTitle,
+                    uploader: postUploader,
+                    items,
+                    original_url: url,
+                });
+            } catch (err) {
+                console.error("gallery-dl parse error:", err);
+                reject(new Error("Failed to parse gallery-dl output"));
+            }
+        });
+
+        proc.on("error", (err) => {
+            reject(new Error(`gallery-dl not found: ${err.message}. Install it with: pip install gallery-dl`));
+        });
+
+        setTimeout(() => { proc.kill(); reject(new Error("gallery-dl timed out")); }, 45000);
+    });
+}
+
+// ─── Progress Tracking ────────────────────────────────────────────────────────
+
+export interface DownloadProgress {
+    percent: number;
+    speed: string;
+    eta: string;
+    status: "downloading" | "merging" | "complete" | "error";
+    currentItem?: number;
+    totalItems?: number;
+}
+
+const progressStore = new Map<string, DownloadProgress>();
+
+export function setProgress(id: string, progress: DownloadProgress) {
+    progressStore.set(id, progress);
+}
+
+export function getProgress(id: string): DownloadProgress | null {
+    return progressStore.get(id) || null;
+}
+
+export function clearProgress(id: string) {
+    progressStore.delete(id);
+}
+
+// ─── Download Video (yt-dlp) ──────────────────────────────────────────────────
+
+export function downloadVideo(
+    url: string,
+    formatId: string,
+    downloadId: string,
+): Promise<{ filePath: string; filename: string }> {
+    return new Promise((resolve, reject) => {
+        const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+        const outTemplate = `${tmpDir}/mediagrab_${downloadId}.%(ext)s`;
+
+        const args = [
+            ...getCookieArgs("yt-dlp"),
+            "-f",
+            formatId ? `${formatId}+bestaudio/best/${formatId}` : "best",
+            "--merge-output-format",
+            "mp4",
+            "--no-warnings",
+            "--no-check-certificates",
+            "--newline",
+            "-o",
+            outTemplate,
+            url,
+        ];
+
+        const proc = spawn("yt-dlp", args);
+        let lastFile = "";
+
+        proc.stdout.on("data", (chunk) => {
+            const line = chunk.toString();
+            const progressMatch = line.match(
+                /\[download\]\s+([\d.]+)%\s+of.*?at\s+([\d.]+\w+\/s).*?ETA\s+(\S+)/
+            );
+            if (progressMatch) {
+                setProgress(downloadId, {
+                    percent: parseFloat(progressMatch[1]),
+                    speed: progressMatch[2],
+                    eta: progressMatch[3],
+                    status: "downloading",
+                });
+            }
+            if (line.includes("[Merger]") || line.includes("[ffmpeg]")) {
+                setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "merging" });
+            }
+            const destMatch = line.match(/\[(?:download|Merger)\].*?Destination:\s*(.+)/);
+            if (destMatch) lastFile = destMatch[1].trim();
+            const mergeMatch = line.match(/Merging formats into "(.+)"/);
+            if (mergeMatch) lastFile = mergeMatch[1].trim();
+        });
+
+        proc.stderr.on("data", (chunk) => { console.error("yt-dlp stderr:", chunk.toString()); });
+
+        proc.on("close", (code) => {
+            if (code !== 0) {
+                setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+                reject(new Error(`yt-dlp exited with code ${code}`));
+                return;
+            }
+            setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "complete" });
+
+            const extensions = ["mp4", "webm", "mkv", "mp3", "m4a"];
+            let outputFile = lastFile;
+            if (!outputFile || !existsSync(outputFile)) {
+                for (const ext of extensions) {
+                    const candidate = `${tmpDir}/mediagrab_${downloadId}.${ext}`;
+                    if (existsSync(candidate)) { outputFile = candidate; break; }
+                }
+            }
+            if (!outputFile || !existsSync(outputFile)) {
+                reject(new Error("Download completed but output file not found"));
+                return;
+            }
+            const { basename } = require("path");
+            resolve({ filePath: outputFile, filename: basename(outputFile) });
+        });
+
+        proc.on("error", (err) => {
+            setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+            reject(new Error(`Failed to run yt-dlp: ${err.message}`));
+        });
+
+        setTimeout(() => { proc.kill(); reject(new Error("Download timed out")); }, 300000);
+    });
+}
+
+// ─── Download Audio Only (yt-dlp) ─────────────────────────────────────────────
+
+export function downloadAudio(
+    url: string,
+    downloadId: string,
+): Promise<{ filePath: string; filename: string }> {
+    return new Promise((resolve, reject) => {
+        const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+        const outTemplate = `${tmpDir}/mediagrab_audio_${downloadId}.%(ext)s`;
+
+        const args = [
+            ...getCookieArgs("yt-dlp"),
+            "-f", "bestaudio",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "0",  // best quality
+            "--no-warnings",
+            "--no-check-certificates",
+            "--newline",
+            "-o",
+            outTemplate,
+            url,
+        ];
+
+        const proc = spawn("yt-dlp", args);
+        let lastFile = "";
+
+        proc.stdout.on("data", (chunk) => {
+            const line = chunk.toString();
+            const progressMatch = line.match(
+                /\[download\]\s+([\d.]+)%\s+of.*?at\s+([\d.]+\w+\/s).*?ETA\s+(\S+)/
+            );
+            if (progressMatch) {
+                setProgress(downloadId, {
+                    percent: parseFloat(progressMatch[1]),
+                    speed: progressMatch[2],
+                    eta: progressMatch[3],
+                    status: "downloading",
+                });
+            }
+            if (line.includes("[ffmpeg]") || line.includes("[ExtractAudio]")) {
+                setProgress(downloadId, { percent: 95, speed: "", eta: "", status: "merging" });
+            }
+            const destMatch = line.match(/\[(?:download|ffmpeg|ExtractAudio)\].*?Destination:\s*(.+)/);
+            if (destMatch) lastFile = destMatch[1].trim();
+        });
+
+        proc.stderr.on("data", (chunk) => { console.error("yt-dlp audio stderr:", chunk.toString()); });
+
+        proc.on("close", (code) => {
+            if (code !== 0) {
+                setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+                reject(new Error(`yt-dlp audio exited with code ${code}`));
+                return;
+            }
+            setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "complete" });
+
+            const extensions = ["mp3", "m4a", "opus", "ogg", "wav", "webm"];
+            let outputFile = lastFile;
+            if (!outputFile || !existsSync(outputFile)) {
+                for (const ext of extensions) {
+                    const candidate = `${tmpDir}/mediagrab_audio_${downloadId}.${ext}`;
+                    if (existsSync(candidate)) { outputFile = candidate; break; }
+                }
+            }
+            if (!outputFile || !existsSync(outputFile)) {
+                reject(new Error("Audio download completed but output file not found"));
+                return;
+            }
+            const { basename } = require("path");
+            resolve({ filePath: outputFile, filename: basename(outputFile) });
+        });
+
+        proc.on("error", (err) => {
+            setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+            reject(new Error(`Failed to run yt-dlp: ${err.message}`));
+        });
+
+        setTimeout(() => { proc.kill(); reject(new Error("Audio download timed out")); }, 300000);
+    });
+}
+
+
+export async function downloadPhoto(
+    imageUrl: string,
+    downloadId: string,
+): Promise<{ filePath: string; filename: string }> {
+    setProgress(downloadId, { percent: 10, speed: "", eta: "", status: "downloading" });
+
+    // Build platform-appropriate headers based on CDN URL
+    const headers: Record<string, string> = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    };
+
+    // Add Referer based on CDN origin
+    if (imageUrl.includes("pbs.twimg.com") || imageUrl.includes("ton.twitter.com")) {
+        headers["Referer"] = "https://x.com/";
+    } else if (imageUrl.includes("fbcdn") || imageUrl.includes("facebook.com") || imageUrl.includes("fb.com")) {
+        headers["Referer"] = "https://www.facebook.com/";
+    } else if (imageUrl.includes("cdninstagram") || imageUrl.includes("scontent")) {
+        headers["Referer"] = "https://www.instagram.com/";
+    }
+
+    const response = await fetch(imageUrl, { headers });
+
+    if (!response.ok) {
+        setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+        throw new Error(`Failed to download image: ${response.statusText}`);
+    }
+
+    setProgress(downloadId, { percent: 50, speed: "", eta: "", status: "downloading" });
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type") || "image/jpeg";
+    const extMap: Record<string, string> = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+        "video/mp4": "mp4",
+    };
+    const ext = extMap[contentType] || "jpg";
+    const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+    const filePath = join(tmpDir, `mediagrab_${downloadId}.${ext}`);
+
+    writeFileSync(filePath, buffer);
+
+    setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "complete" });
+    return { filePath, filename: `photo_${downloadId}.${ext}` };
+}
+
+// ─── Download with gallery-dl ─────────────────────────────────────────────────
+
+export function downloadWithGalleryDl(
+    url: string,
+    downloadId: string,
+    itemIndex?: number,
+): Promise<{ filePath: string; filename: string; isZip?: boolean }> {
+    return new Promise((resolve, reject) => {
+        const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+        const outDir = join(tmpDir, `mediagrab_gdl_${downloadId}`);
+
+        // Create output directory
+        mkdirSync(outDir, { recursive: true });
+
+        const args = [
+            ...getCookieArgs("gallery-dl"),
+            "--dest", outDir,
+            "--filename", "{num:>02}.{extension}",
+            "--no-mtime",
+            url,
+        ];
+
+        // If specific item index, use range
+        if (itemIndex !== undefined) {
+            args.splice(0, 0, "--range", `${itemIndex + 1}`);
+        }
+
+        const proc = spawn("gallery-dl", args);
+        let fileCount = 0;
+
+        setProgress(downloadId, { percent: 10, speed: "", eta: "", status: "downloading" });
+
+        proc.stdout.on("data", (chunk) => {
+            const line = chunk.toString();
+            if (line.includes("/")) {
+                fileCount++;
+                setProgress(downloadId, {
+                    percent: Math.min(90, 10 + fileCount * 20),
+                    speed: "",
+                    eta: "",
+                    status: "downloading",
+                });
+            }
+        });
+
+        proc.stderr.on("data", (chunk) => { console.error("gallery-dl stderr:", chunk.toString()); });
+
+        proc.on("close", (code) => {
+            if (code !== 0) {
+                setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+                reject(new Error(`gallery-dl exited with code ${code}`));
+                return;
+            }
+
+            // Find downloaded files
+            const files = findFilesRecursive(outDir);
+            if (files.length === 0) {
+                reject(new Error("No files were downloaded"));
+                return;
+            }
+
+            setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "complete" });
+
+            if (files.length === 1) {
+                // Single file
+                const { basename } = require("path");
+                resolve({ filePath: files[0], filename: basename(files[0]) });
+            } else {
+                // Multiple files — we'll zip them
+                // For now, return first file; the API route handles multi-file zipping
+                const { basename } = require("path");
+                resolve({
+                    filePath: outDir,
+                    filename: `mediagrab_${downloadId}`,
+                    isZip: true,
+                });
+            }
+        });
+
+        proc.on("error", (err) => {
+            setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
+            reject(new Error(`Failed to run gallery-dl: ${err.message}`));
+        });
+
+        setTimeout(() => { proc.kill(); reject(new Error("Download timed out")); }, 300000);
+    });
+}
+
+function findFilesRecursive(dir: string): string[] {
+    const results: string[] = [];
+    if (!existsSync(dir)) return results;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+            results.push(...findFilesRecursive(fullPath));
+        } else {
+            results.push(fullPath);
+        }
+    }
+    return results;
+}
