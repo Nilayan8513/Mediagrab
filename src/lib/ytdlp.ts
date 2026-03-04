@@ -18,7 +18,21 @@ import { resolve } from "path";
 const COOKIES_FILE = resolve(process.cwd(), "cookies.txt");
 
 function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
-    // 1. Prefer cookies.txt file (always works, no DB locking)
+    // 1. Prefer YTDLP_COOKIES environment variable (Base64 encoded cookie string - perfect for Render)
+    if (process.env.YTDLP_COOKIES) {
+        try {
+            const tempDir = process.env.TEMP || process.env.TMP || "/tmp";
+            const tempCookieFile = join(tempDir, "cookies_temp.txt");
+            // Decode the base64 string to a file at runtime
+            writeFileSync(tempCookieFile, Buffer.from(process.env.YTDLP_COOKIES, 'base64').toString('utf8'));
+            console.log("Using cookies from YTDLP_COOKIES environment variable");
+            return ["--cookies", tempCookieFile];
+        } catch (err) {
+            console.error("Failed to decode YTDLP_COOKIES env var:", err);
+        }
+    }
+
+    // 2. Fallback to cookies.txt file in project root
     if (existsSync(COOKIES_FILE)) {
         console.log("Using cookies from cookies.txt file");
         return ["--cookies", COOKIES_FILE];
@@ -240,7 +254,7 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = t
             reject(new Error(`Failed to run yt-dlp: ${err.message}. Is yt-dlp installed?`));
         });
 
-        setTimeout(() => { proc.kill(); reject(new Error("yt-dlp timed out")); }, 30000);
+        setTimeout(() => { proc.kill(); reject(new Error("yt-dlp timed out")); }, 60000);
     });
 }
 
@@ -461,7 +475,7 @@ async function analyzeWithGalleryDl(url: string, platform: Platform, withCookies
             reject(new Error(`gallery-dl not found: ${err.message}. Install it with: pip install gallery-dl`));
         });
 
-        setTimeout(() => { proc.kill(); reject(new Error("gallery-dl timed out")); }, 45000);
+        setTimeout(() => { proc.kill(); reject(new Error("gallery-dl timed out")); }, 90000);
     });
 }
 
