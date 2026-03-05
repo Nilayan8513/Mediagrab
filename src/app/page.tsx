@@ -138,28 +138,6 @@ export default function Home() {
         filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
         blob = await proxyDownload(cdnUrl, filename, (pct) => setDownloadProgress(pct));
 
-      } else if ((mediaInfo.platform === "twitter" || mediaInfo.platform === "facebook") && activeItem.type === "video") {
-        // ── TWITTER/FACEBOOK VIDEO: server yt-dlp (m3u8 URLs expire, can't proxy) ──
-        filename = `${mediaInfo.platform}_video_${format?.quality || "best"}.mp4`;
-        setDownloadSpeed("Downloading via server...");
-        const downloadId = `dl_${Date.now()}`;
-        const res = await fetch("/api/download", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: mediaInfo.original_url,
-            downloadId,
-            formatId: selectedFormat || "",
-            itemType: "video",
-            itemIndex: activeItem.index,
-          }),
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({ error: "Download failed" }));
-          throw new Error(errData.error || "Download failed");
-        }
-        blob = await res.blob();
-
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
         // ── VIDEO-ONLY: merge video+audio in browser via FFmpeg.wasm ──
         filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
@@ -186,15 +164,30 @@ export default function Home() {
         });
 
       } else if (format && format.url) {
-        // ── VIDEO with direct URL: client-side proxy ──
+        // ── VIDEO with URL: client-side download ──
         filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
-        blob = await proxyDownload(format.url, filename, (pct) => setDownloadProgress(pct));
+        // For local serve-file URLs (Twitter/FB pre-downloaded), fetch directly
+        if (format.url.startsWith("/api/")) {
+          const res = await fetch(format.url);
+          if (!res.ok) throw new Error(`Download failed (${res.status})`);
+          blob = await res.blob();
+        } else {
+          blob = await proxyDownload(format.url, filename, (pct) => setDownloadProgress(pct));
+        }
 
-      } else if (activeItem.direct_url?.startsWith("http")) {
+      } else if (activeItem.direct_url) {
         // ── Fallback: direct URL ──
         const ext = (activeItem.type as string) === "photo" ? "jpg" : "mp4";
         filename = `${mediaInfo.platform}_media_${activeItemIndex + 1}.${ext}`;
-        blob = await proxyDownload(activeItem.direct_url, filename, (pct) => setDownloadProgress(pct));
+        if (activeItem.direct_url.startsWith("/api/")) {
+          const res = await fetch(activeItem.direct_url);
+          if (!res.ok) throw new Error(`Download failed (${res.status})`);
+          blob = await res.blob();
+        } else if (activeItem.direct_url.startsWith("http")) {
+          blob = await proxyDownload(activeItem.direct_url, filename, (pct) => setDownloadProgress(pct));
+        } else {
+          throw new Error("No download URL available");
+        }
 
       } else {
         throw new Error("No download URL available for this item");

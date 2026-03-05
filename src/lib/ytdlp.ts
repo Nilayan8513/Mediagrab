@@ -210,9 +210,66 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
         );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp with cookies ──
+    // ── Twitter/X & Facebook: analyze + pre-download to temp file for client proxy ──
     if (platform === "twitter" || platform === "facebook") {
-        return analyzeWithYtDlp(url, platform);
+        const result = await analyzeWithYtDlp(url, platform);
+
+        // Pre-download the video to a temp file (m3u8 URLs expire too fast for proxy)
+        // The client will then download from /api/serve-file which is a simple HTTP file
+        try {
+            const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+            const dlId = `mediagrab_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const outPath = join(tmpDir, `${dlId}.mp4`);
+
+
+            const dlArgs = [
+                url,
+                "-o", outPath,
+                "--force-ipv4",
+                "--no-warnings",
+                "--no-playlist",
+                "-f", "best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+            ];
+            const cookieArgs = getCookieArgs("yt-dlp");
+            dlArgs.push(...cookieArgs);
+
+            await new Promise<void>((resolve, reject) => {
+                const proc = spawn("yt-dlp", dlArgs);
+                let stderr = "";
+                proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+                proc.on("close", (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(stderr || `yt-dlp exit ${code}`));
+                });
+                proc.on("error", (err) => reject(err));
+                setTimeout(() => { proc.kill(); reject(new Error("Pre-download timed out")); }, 120000);
+            });
+
+            // Replace all format URLs with the local serve-file URL
+            const serveUrl = `/api/serve-file?path=${encodeURIComponent(outPath)}`;
+            for (const item of result.items) {
+                if (item.type === "video") {
+                    if (item.formats.length > 0) {
+                        // Keep only one format pointing to our downloaded file
+                        const bestFormat = item.formats[0];
+                        item.formats = [{
+                            ...bestFormat,
+                            url: serveUrl,
+                            has_audio: true,
+                            ext: "mp4",
+                        }];
+                    } else {
+                        item.direct_url = serveUrl;
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Pre-download failed:", err);
+            // If pre-download fails, return original result (formats may have m3u8 URLs)
+        }
+
+        return result;
     }
 
     throw new Error("Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook.");
