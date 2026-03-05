@@ -210,11 +210,27 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
         );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp with cookies (X now requires auth) ──
+    // ── Twitter/X & Facebook: yt-dlp first, Cobalt fallback (returns direct MP4 URLs) ──
     if (platform === "twitter" || platform === "facebook") {
-        return analyzeWithYtDlp(url, platform);
-    }
+        try {
+            return await analyzeWithYtDlp(url, platform);
+        } catch (ytdlpErr) {
+            const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "";
+            console.error(`yt-dlp failed for ${platform}:`, ytdlpMsg);
 
+            // Cobalt fallback — returns direct MP4 URLs for client-side proxy
+            try {
+                console.log(`[analyze] Trying Cobalt API fallback for ${platform}...`);
+                const cobaltResult = await analyzeWithCobalt(url, platform);
+                if (cobaltResult.items.length > 0) return cobaltResult;
+            } catch (cobaltErr) {
+                const cobaltMsg = cobaltErr instanceof Error ? cobaltErr.message : "";
+                console.error("Cobalt also failed:", cobaltMsg);
+            }
+
+            throw new Error(`${platform} download failed. ${ytdlpMsg}`);
+        }
+    }
     throw new Error("Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook.");
 }
 
