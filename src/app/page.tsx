@@ -139,14 +139,35 @@ export default function Home() {
         blob = await proxyDownload(cdnUrl, filename, (pct) => {
           setDownloadProgress(pct);
         });
+      } else if (mediaInfo.platform === "twitter" || mediaInfo.platform === "facebook") {
+        // ── TWITTER/FACEBOOK: server-side download (m3u8 streams can't be proxied) ──
+        filename = `${mediaInfo.platform}_video_${format?.quality || "best"}.mp4`;
+        const downloadId = `dl_${Date.now()}`;
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: mediaInfo.original_url,
+            downloadId,
+            formatId: selectedFormat || "best",
+            itemType: "video",
+            itemIndex: activeItem.index,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || "Download failed");
+        }
+        blob = await res.blob();
       } else if (format && format.url && format.has_audio) {
         // ── VIDEO (combined — already has audio): proxy download ──
+        // Works for: YouTube Cobalt URLs, Instagram CDN URLs
         filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
         blob = await proxyDownload(format.url, filename, (pct) => {
           setDownloadProgress(pct);
         });
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
-        // ── VIDEO-ONLY (YouTube 1080p+): download video + audio → merge in browser ──
+        // ── VIDEO-ONLY (YouTube 1080p+ via yt-dlp): download video + audio → merge in browser ──
         filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
         setDownloadStatus("downloading");
 

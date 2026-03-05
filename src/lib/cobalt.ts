@@ -134,8 +134,10 @@ export async function analyzeWithCobalt(url: string): Promise<CobaltResult> {
         }
     }
 
-    // Probe 720p and 480p only (avoid 6 slow API calls)
+    // Probe additional qualities (4K, 1440p, 720p, 480p)
     for (const preset of [
+        { quality: "2160", label: "4K (2160p)", height: 2160 },
+        { quality: "1440", label: "2K (1440p)", height: 1440 },
         { quality: "720", label: "720p", height: 720 },
         { quality: "480", label: "480p", height: 480 },
     ]) {
