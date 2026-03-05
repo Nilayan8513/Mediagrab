@@ -50,8 +50,8 @@ function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
 }
 
 function shouldUseCookies(platform: Platform): boolean {
-    // Only use cookies for YouTube and Instagram — cookies BREAK Twitter/Facebook extraction
-    return platform === "youtube" || platform === "instagram";
+    // Use cookies for all platforms that have them — Twitter/X now requires auth too
+    return platform === "youtube" || platform === "instagram" || platform === "twitter" || platform === "facebook";
 }
 
 function isRetryableError(errorMsg: string): boolean {
@@ -199,7 +199,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
         );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp (NEVER use cookies) ──
+    // ── Twitter/X & Facebook: yt-dlp with cookies (X now requires auth) ──
     if (platform === "twitter" || platform === "facebook") {
         return analyzeWithYtDlp(url, platform);
     }
