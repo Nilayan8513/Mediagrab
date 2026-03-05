@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { downloadVideo, downloadAudio, downloadPhoto, downloadWithGalleryDl, clearProgress } from "@/lib/ytdlp";
+import { downloadVideo, downloadAudio, downloadPhoto, downloadWithGalleryDl, clearProgress, setProgress } from "@/lib/ytdlp";
 import { downloadWithInstaloader } from "@/lib/instaloader";
 import { randomUUID } from "crypto";
-import { createReadStream, unlinkSync, statSync, existsSync, readdirSync, rmSync } from "fs";
+import { createReadStream, unlinkSync, statSync, existsSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join, basename } from "path";
+import archiver from "archiver";
+import { createWriteStream } from "fs";
 
 export async function POST(request: NextRequest) {
     try {
@@ -12,12 +14,12 @@ export async function POST(request: NextRequest) {
             url,
             formatId,
             downloadId: clientDownloadId,
-            itemType,        // "video" | "photo"
-            directUrl,       // For photos: the direct image URL
-            itemIndex,       // For gallery-dl/instaloader: specific item index
-            useGalleryDl,    // Whether to use gallery-dl for download
-            useInstaloader,  // Whether to use instaloader for download
-            audioOnly,       // Whether to download audio only
+            itemType,
+            directUrl,
+            itemIndex,
+            useGalleryDl,
+            useInstaloader,
+            audioOnly,
         } = body;
 
         if (!url || typeof url !== "string") {
@@ -31,37 +33,31 @@ export async function POST(request: NextRequest) {
         let isDirectory = false;
 
         if (audioOnly) {
-            // Audio-only download via yt-dlp
             const result = await downloadAudio(url, downloadId);
             filePath = result.filePath;
             filename = result.filename;
         } else if (useInstaloader) {
-            // Use instaloader for Instagram photos/carousels
             const result = await downloadWithInstaloader(url, downloadId, itemIndex);
             filePath = result.filePath;
             filename = result.filename;
             isDirectory = result.isZip || false;
         } else if (itemType === "photo" && directUrl) {
-            // Download photo directly via HTTP
             const result = await downloadPhoto(directUrl, downloadId);
             filePath = result.filePath;
             filename = result.filename;
         } else if (useGalleryDl) {
-            // Use gallery-dl for download
             const result = await downloadWithGalleryDl(url, downloadId, itemIndex);
             filePath = result.filePath;
             filename = result.filename;
             isDirectory = result.isZip || false;
         } else {
-            // Use yt-dlp for video download
             const result = await downloadVideo(url, formatId || "", downloadId);
             filePath = result.filePath;
             filename = result.filename;
         }
 
         if (isDirectory) {
-            // Multiple files: find all and create a zip-like response
-            // For simplicity, send the first file found or archive the directory
+            // Multiple files in directory — create a ZIP
             const files = findFilesRecursive(filePath);
 
             if (files.length === 0) {
@@ -69,23 +65,19 @@ export async function POST(request: NextRequest) {
             }
 
             if (files.length === 1) {
-                // Single file in directory
+                // Single file in directory — stream it directly
                 return streamFile(files[0], basename(files[0]), downloadId, filePath);
             }
 
-            // Multiple files: return file list so frontend can download individually
-            const fileList = files.map((f, i) => ({
-                index: i,
-                filename: basename(f),
-                path: f,
-                size: statSync(f).size,
-            }));
+            // Create ZIP from multiple files
+            setProgress(downloadId, { percent: 95, speed: "", eta: "", status: "merging" });
+            const zipPath = await createZip(files, downloadId);
+            const zipFilename = `mediagrab_${downloadId}.zip`;
 
-            return NextResponse.json({
-                type: "multi",
-                downloadId,
-                files: fileList,
-            });
+            // Cleanup the source directory
+            try { rmSync(filePath, { recursive: true, force: true }); } catch { /* ignore */ }
+
+            return streamFile(zipPath, zipFilename, downloadId);
         }
 
         // Single file: stream it
@@ -95,6 +87,27 @@ export async function POST(request: NextRequest) {
         console.error("Download error:", message);
         return NextResponse.json({ error: message }, { status: 500 });
     }
+}
+
+// Create a ZIP file from multiple files
+function createZip(files: string[], downloadId: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
+        const zipPath = join(tmpDir, `mediagrab_${downloadId}.zip`);
+        const output = createWriteStream(zipPath);
+        const archive = archiver("zip", { zlib: { level: 5 } });
+
+        output.on("close", () => resolve(zipPath));
+        archive.on("error", (err) => reject(err));
+
+        archive.pipe(output);
+
+        for (const file of files) {
+            archive.file(file, { name: basename(file) });
+        }
+
+        archive.finalize();
+    });
 }
 
 function streamFile(filePath: string, filename: string, downloadId: string, cleanupDir?: string) {
@@ -113,6 +126,7 @@ function streamFile(filePath: string, filename: string, downloadId: string, clea
         png: "image/png",
         webp: "image/webp",
         gif: "image/gif",
+        zip: "application/zip",
     };
     const contentType = mimeMap[ext || ""] || "application/octet-stream";
 

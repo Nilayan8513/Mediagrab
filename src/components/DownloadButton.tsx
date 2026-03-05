@@ -180,7 +180,7 @@ export default function DownloadButton({
                     style={{ background: "rgba(34, 197, 94, 0.85)" }}
                 >
                     {DownloadIcon}
-                    Download All
+                    Download All (ZIP)
                 </button>
             )}
         </div>

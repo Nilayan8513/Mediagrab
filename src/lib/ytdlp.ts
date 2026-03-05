@@ -274,11 +274,11 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
         }))
         .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-    // Deduplicate by height
-    const seen = new Set<number>();
+    // Deduplicate by quality label (not raw height, since e.g. 3840x1920 and 3840x2160 are both "4K")
+    const seen = new Set<string>();
     const uniqueFormats = formats.filter((f) => {
-        if (!f.height || seen.has(f.height)) return false;
-        seen.add(f.height);
+        if (!f.quality || seen.has(f.quality)) return false;
+        seen.add(f.quality);
         return true;
     });
 
@@ -297,9 +297,20 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
 
 function buildQualityLabel(f: Record<string, unknown>): string {
     const height = f.height as number;
+    const width = f.width as number;
+    const formatNote = String(f.format_note || "").toLowerCase();
+
     if (!height) return String(f.format_note || f.resolution || "Unknown");
-    if (height >= 2160) return "4K";
-    if (height >= 1440) return "1440p";
+
+    // Check yt-dlp's own format_note first for accurate labeling
+    // (handles 360° videos, ultrawide, etc. where height alone is misleading)
+    if (formatNote.includes("4320") || formatNote.includes("8k")) return "8K";
+    if (formatNote.includes("2160") || formatNote.includes("4k")) return "4K";
+
+    // Also check width — e.g. 3840x1920 (360° video) is still 4K
+    if (width >= 7680 || height >= 4320) return "8K";
+    if (width >= 3840 || height >= 2160) return "4K";
+    if (width >= 2560 || height >= 1440) return "1440p";
     if (height >= 1080) return "1080p";
     if (height >= 720) return "720p";
     if (height >= 480) return "480p";

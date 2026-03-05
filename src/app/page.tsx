@@ -193,19 +193,6 @@ export default function Home() {
         throw new Error(data.error || "Download failed");
       }
 
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        const data = await res.json();
-        if (data.type === "multi" && data.files) {
-          for (const file of data.files) {
-            await downloadFileByPath(file.path, file.filename);
-          }
-          setDownloadStatus("complete");
-          setDownloadProgress(100);
-          return;
-        }
-      }
-
       await triggerBlobDownload(res);
       setDownloadStatus("complete");
       setDownloadProgress(100);
@@ -230,6 +217,7 @@ export default function Home() {
         setDownloadProgress(progress.percent);
         setDownloadSpeed(progress.speed || "");
         setDownloadEta(progress.eta || "");
+        if (progress.status === "merging") setDownloadStatus("merging");
       } catch { /* ignore */ }
     };
 
@@ -253,19 +241,7 @@ export default function Home() {
         throw new Error(data.error || "Download failed");
       }
 
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        const data = await res.json();
-        if (data.type === "multi" && data.files) {
-          for (const file of data.files) {
-            await downloadFileByPath(file.path, file.filename);
-          }
-          setDownloadStatus("complete");
-          setDownloadProgress(100);
-          return;
-        }
-      }
-
+      // Server now returns a single ZIP for multiple files
       await triggerBlobDownload(res);
       setDownloadStatus("complete");
       setDownloadProgress(100);
@@ -406,15 +382,4 @@ async function triggerBlobDownload(res: Response) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(blobUrl);
-}
-
-async function downloadFileByPath(path: string, filename: string) {
-  const res = await fetch("/api/serve-file", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-  if (res.ok) {
-    await triggerBlobDownload(res);
-  }
 }
