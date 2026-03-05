@@ -210,27 +210,11 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
         );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp first, Cobalt fallback (returns direct MP4 URLs) ──
+    // ── Twitter/X & Facebook: yt-dlp with cookies ──
     if (platform === "twitter" || platform === "facebook") {
-        try {
-            return await analyzeWithYtDlp(url, platform);
-        } catch (ytdlpErr) {
-            const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "";
-            console.error(`yt-dlp failed for ${platform}:`, ytdlpMsg);
-
-            // Cobalt fallback — returns direct MP4 URLs for client-side proxy
-            try {
-                console.log(`[analyze] Trying Cobalt API fallback for ${platform}...`);
-                const cobaltResult = await analyzeWithCobalt(url, platform);
-                if (cobaltResult.items.length > 0) return cobaltResult;
-            } catch (cobaltErr) {
-                const cobaltMsg = cobaltErr instanceof Error ? cobaltErr.message : "";
-                console.error("Cobalt also failed:", cobaltMsg);
-            }
-
-            throw new Error(`${platform} download failed. ${ytdlpMsg}`);
-        }
+        return analyzeWithYtDlp(url, platform);
     }
+
     throw new Error("Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook.");
 }
 
@@ -328,24 +312,41 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
         .filter((f) => {
             // Must have video codec
             if (!f.vcodec || f.vcodec === "none") return false;
-            // Keep all formats — Twitter uses m3u8_native for ALL its formats
-            // and yt-dlp handles downloading them correctly via server-side
+            // Must have a URL
+            if (!f.url) return false;
             return true;
         })
-        .map((f) => ({
-            format_id: String(f.format_id || ""),
-            quality: buildQualityLabel(f),
-            ext: String(f.ext || "mp4"),
-            filesize: (f.filesize as number) || (f.filesize_approx as number) || null,
-            resolution: f.resolution ? String(f.resolution) : null,
-            vcodec: f.vcodec ? String(f.vcodec) : null,
-            acodec: f.acodec ? String(f.acodec) : null,
-            height: (f.height as number) || null,
-            fps: (f.fps as number) || null,
-            url: f.url ? String(f.url) : null,
-            has_audio: !!(f.acodec && f.acodec !== "none"),
-        }))
-        .sort((a, b) => (b.height || 0) - (a.height || 0));
+        .map((f) => {
+            const protocol = String(f.protocol || "");
+            const url = String(f.url || "");
+            // Prefer direct HTTP URLs for client-side proxy (m3u8 can't be proxied)
+            const isDirectUrl = !url.includes(".m3u8") && !protocol.includes("m3u8");
+            return {
+                format_id: String(f.format_id || ""),
+                quality: buildQualityLabel(f),
+                ext: String(f.ext || "mp4"),
+                filesize: (f.filesize as number) || (f.filesize_approx as number) || null,
+                resolution: f.resolution ? String(f.resolution) : null,
+                vcodec: f.vcodec ? String(f.vcodec) : null,
+                acodec: f.acodec ? String(f.acodec) : null,
+                height: (f.height as number) || null,
+                fps: (f.fps as number) || null,
+                url: url,
+                has_audio: !!(f.acodec && f.acodec !== "none"),
+                _isDirectUrl: isDirectUrl, // used for sorting only
+            };
+        })
+        // Sort: highest quality first, then prefer direct HTTP URLs over m3u8
+        .sort((a, b) => {
+            const heightDiff = (b.height || 0) - (a.height || 0);
+            if (heightDiff !== 0) return heightDiff;
+            // At same height, prefer direct URLs
+            if (a._isDirectUrl && !b._isDirectUrl) return -1;
+            if (!a._isDirectUrl && b._isDirectUrl) return 1;
+            return 0;
+        })
+        // Remove the internal sorting field
+        .map(({ _isDirectUrl, ...f }) => f);
 
     // Deduplicate by quality label (not raw height, since e.g. 3840x1920 and 3840x2160 are both "4K")
     const seen = new Set<string>();

@@ -130,7 +130,7 @@ export default function Home() {
       let filename: string;
 
       if (activeItem.type === "photo") {
-        // ── PHOTO: proxy download from CDN URL ──
+        // ── PHOTO: proxy download ──
         const cdnUrl = activeItem.direct_url;
         if (!cdnUrl || !cdnUrl.startsWith("http")) {
           throw new Error("No download URL available for this photo");
@@ -139,18 +139,9 @@ export default function Home() {
         blob = await proxyDownload(cdnUrl, filename, (pct) => {
           setDownloadProgress(pct);
         });
-      } else if (format && format.url && format.has_audio) {
-        // ── VIDEO (combined — already has audio): proxy download ──
-        // Works for: YouTube Cobalt URLs, Instagram CDN URLs
-        filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
-        blob = await proxyDownload(format.url, filename, (pct) => {
-          setDownloadProgress(pct);
-        });
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
-        // ── VIDEO-ONLY (YouTube 1080p+ via yt-dlp): download video + audio → merge in browser ──
+        // ── VIDEO-ONLY (separate video+audio): merge in browser via FFmpeg.wasm ──
         filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
-        setDownloadStatus("downloading");
-
         blob = await mergeVideoAudio(
           format.url,
           activeItem.audio_url,
@@ -163,22 +154,22 @@ export default function Home() {
                 break;
               case "downloading_video":
                 setDownloadSpeed("Downloading video...");
-                setDownloadProgress(Math.round(p.percent * 0.4)); // 0-40%
+                setDownloadProgress(Math.round(p.percent * 0.4));
                 break;
               case "downloading_audio":
                 setDownloadSpeed("Downloading audio...");
-                setDownloadProgress(40 + Math.round(p.percent * 0.2)); // 40-60%
+                setDownloadProgress(40 + Math.round(p.percent * 0.2));
                 break;
               case "merging":
                 setDownloadStatus("merging");
                 setDownloadSpeed("Merging in browser...");
-                setDownloadProgress(60 + Math.round(p.percent * 0.4)); // 60-100%
+                setDownloadProgress(60 + Math.round(p.percent * 0.4));
                 break;
             }
           }
         );
       } else if (format && format.url) {
-        // ── VIDEO with URL but no audio info — try direct download ──
+        // ── VIDEO with URL (combined or any): proxy download ──
         filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
         blob = await proxyDownload(format.url, filename, (pct) => {
           setDownloadProgress(pct);

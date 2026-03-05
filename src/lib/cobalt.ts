@@ -1,17 +1,25 @@
 /**
  * Cobalt API client — fallback for YouTube, Twitter, and Facebook.
  * Returns direct MP4 URLs that can be proxied client-side.
- * API docs: https://github.com/imputnet/cobalt
+ * 
+ * NOTE: The public api.cobalt.tools now requires JWT auth (Turnstile).
+ * To use Cobalt, you must either:
+ * 1. Self-host: docker run -d -p 9000:9000 ghcr.io/imputnet/cobalt:latest
+ * 2. Set COBALT_API_URL env variable to your instance URL
+ * 
+ * API docs: https://github.com/imputnet/cobalt/blob/main/docs/api.md
  */
 
-// Public Cobalt API instance
-const COBALT_API = "https://api.cobalt.tools";
+// Use self-hosted instance or env variable — NO public instance works without auth
+const COBALT_API = process.env.COBALT_API_URL || "http://localhost:9000";
+
+type CobaltPlatform = "youtube" | "twitter" | "facebook";
 
 interface CobaltResponse {
-    status: "tunnel" | "redirect" | "picker" | "error";
+    status: "tunnel" | "redirect" | "picker" | "local-processing" | "error";
     url?: string;
     picker?: Array<{ url: string; type: "video" | "photo" }>;
-    error?: string;
+    error?: { code: string };
     filename?: string;
 }
 
@@ -28,8 +36,6 @@ interface CobaltFormat {
     acodec: string | null;
     fps: number | null;
 }
-
-type CobaltPlatform = "youtube" | "twitter" | "facebook";
 
 interface CobaltResult {
     platform: CobaltPlatform;
@@ -48,18 +54,8 @@ interface CobaltResult {
     original_url: string;
 }
 
-// Quality presets Cobalt supports
-const QUALITY_PRESETS = [
-    { quality: "2160", label: "4K (2160p)", height: 2160 },
-    { quality: "1440", label: "2K (1440p)", height: 1440 },
-    { quality: "1080", label: "1080p", height: 1080 },
-    { quality: "720", label: "720p", height: 720 },
-    { quality: "480", label: "480p", height: 480 },
-    { quality: "360", label: "360p", height: 360 },
-];
-
-async function cobaltRequest(url: string, quality: string = "1080"): Promise<CobaltResponse> {
-    const res = await fetch(`${COBALT_API}/api/json`, {
+async function cobaltRequest(url: string, videoQuality: string = "1080"): Promise<CobaltResponse> {
+    const res = await fetch(`${COBALT_API}/`, {
         method: "POST",
         headers: {
             "Accept": "application/json",
@@ -67,21 +63,22 @@ async function cobaltRequest(url: string, quality: string = "1080"): Promise<Cob
         },
         body: JSON.stringify({
             url,
-            vQuality: quality,
-            filenamePattern: "basic",
-            isAudioOnly: false,
+            videoQuality,
+            filenameStyle: "basic",
+            downloadMode: "auto",
         }),
     });
 
     if (!res.ok) {
-        throw new Error(`Cobalt API error: ${res.status} ${res.statusText}`);
+        const text = await res.text();
+        throw new Error(`Cobalt API error: ${res.status} — ${text.substring(0, 200)}`);
     }
 
     return res.json();
 }
 
 async function cobaltAudioRequest(url: string): Promise<CobaltResponse> {
-    const res = await fetch(`${COBALT_API}/api/json`, {
+    const res = await fetch(`${COBALT_API}/`, {
         method: "POST",
         headers: {
             "Accept": "application/json",
@@ -89,54 +86,54 @@ async function cobaltAudioRequest(url: string): Promise<CobaltResponse> {
         },
         body: JSON.stringify({
             url,
-            isAudioOnly: true,
-            aFormat: "mp3",
-            filenamePattern: "basic",
+            downloadMode: "audio",
+            audioFormat: "mp3",
+            filenameStyle: "basic",
         }),
     });
 
     if (!res.ok) {
-        throw new Error(`Cobalt API error: ${res.status} ${res.statusText}`);
+        throw new Error(`Cobalt audio API error: ${res.status}`);
     }
 
     return res.json();
 }
 
+function makeCobaltFormat(id: string, label: string, height: number, url: string): CobaltFormat {
+    return {
+        format_id: id,
+        quality: label,
+        ext: "mp4",
+        filesize: null,
+        url,
+        has_audio: true,
+        height,
+        resolution: `${height}p`,
+        vcodec: "h264",
+        acodec: "aac",
+        fps: null,
+    };
+}
+
 /**
- * Analyze a YouTube URL via Cobalt API.
- * Returns format info similar to yt-dlp's output so the rest of the app works seamlessly.
+ * Analyze a URL via Cobalt API.
+ * Returns format info compatible with yt-dlp's MediaInfo structure.
  */
 export async function analyzeWithCobalt(url: string, platform: CobaltPlatform = "youtube"): Promise<CobaltResult> {
-    // Get the best quality to extract title/metadata
     const bestResult = await cobaltRequest(url, "1080");
 
     if (bestResult.status === "error") {
-        throw new Error(bestResult.error || "Cobalt could not process this URL");
+        throw new Error(bestResult.error?.code || "Cobalt could not process this URL");
     }
 
     const formats: CobaltFormat[] = [];
 
     if (platform === "youtube") {
-        // YouTube: probe multiple qualities
-        if (bestResult.status === "tunnel" || bestResult.status === "redirect") {
-            if (bestResult.url) {
-                formats.push({
-                    format_id: "cobalt_1080",
-                    quality: "1080p",
-                    ext: "mp4",
-                    filesize: null,
-                    url: bestResult.url,
-                    has_audio: true,
-                    height: 1080,
-                    resolution: "1080p",
-                    vcodec: "h264",
-                    acodec: "aac",
-                    fps: null,
-                });
-            }
+        // YouTube: probe multiple qualities (reuse initial request for 1080p)
+        if ((bestResult.status === "tunnel" || bestResult.status === "redirect") && bestResult.url) {
+            formats.push(makeCobaltFormat("cobalt_1080", "1080p", 1080, bestResult.url));
         }
 
-        // Probe additional qualities (4K, 1440p, 720p, 480p)
         for (const preset of [
             { quality: "2160", label: "4K (2160p)", height: 2160 },
             { quality: "1440", label: "2K (1440p)", height: 1440 },
@@ -146,65 +143,43 @@ export async function analyzeWithCobalt(url: string, platform: CobaltPlatform = 
             try {
                 const result = await cobaltRequest(url, preset.quality);
                 if ((result.status === "tunnel" || result.status === "redirect") && result.url) {
-                    formats.push({
-                        format_id: `cobalt_${preset.quality}`,
-                        quality: preset.label,
-                        ext: "mp4",
-                        filesize: null,
-                        url: result.url,
-                        has_audio: true,
-                        height: preset.height,
-                        resolution: `${preset.height}p`,
-                        vcodec: "h264",
-                        acodec: "aac",
-                        fps: null,
-                    });
+                    formats.push(makeCobaltFormat(`cobalt_${preset.quality}`, preset.label, preset.height, result.url));
                 }
-            } catch {
-                // Quality not available, skip
-            }
+            } catch { /* quality not available */ }
         }
 
+        // Sort: highest quality first
+        formats.sort((a, b) => b.height - a.height);
     } else {
-        // Twitter/Facebook: just use the best result (single quality)
+        // Twitter/Facebook: single best quality
         if ((bestResult.status === "tunnel" || bestResult.status === "redirect") && bestResult.url) {
-            formats.push({
-                format_id: "cobalt_best",
-                quality: "Best",
-                ext: "mp4",
-                filesize: null,
-                url: bestResult.url,
-                has_audio: true,
-                height: 720,
-                resolution: "720p",
-                vcodec: "h264",
-                acodec: "aac",
-                fps: null,
-            });
+            formats.push(makeCobaltFormat("cobalt_best", "Best", 720, bestResult.url));
         }
     }
 
-    // Try to get audio URL
+    // Get audio URL
     let audioUrl: string | null = null;
     try {
         const audioResult = await cobaltAudioRequest(url);
         if ((audioResult.status === "tunnel" || audioResult.status === "redirect") && audioResult.url) {
             audioUrl = audioResult.url;
         }
-    } catch { /* audio not available */ }
+    } catch { /* no audio */ }
 
-    // Extract video ID for thumbnail
+    // Thumbnail
     const videoIdMatch = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
     const videoId = videoIdMatch ? videoIdMatch[1] : "";
     const thumbnail = videoId ? `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg` : "";
 
+    const title = bestResult.filename?.replace(/\.[^.]+$/, "") || `${platform} Video`;
+
     return {
         platform,
-        title: bestResult.filename?.replace(/\.[^.]+$/, "") || `${platform} Video`,
+        title,
         uploader: platform.charAt(0).toUpperCase() + platform.slice(1),
         items: [{
             type: "video",
-            title: bestResult.filename?.replace(/\.[^.]+$/, "") || `${platform} Video`,
+            title,
             thumbnail,
             duration: null,
             formats,
