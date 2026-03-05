@@ -10,6 +10,8 @@ import {
   mergeVideoAudio,
   extractAudio,
   proxyDownload,
+  isM3u8Url,
+  downloadM3u8Video,
   type FFmpegProgress,
 } from "@/lib/ffmpeg-client";
 
@@ -164,6 +166,30 @@ export default function Home() {
                 setDownloadStatus("merging");
                 setDownloadSpeed("Merging in browser...");
                 setDownloadProgress(60 + Math.round(p.percent * 0.4));
+                break;
+            }
+          }
+        );
+      } else if (format && format.url && isM3u8Url(format.url)) {
+        // ── HLS/m3u8 VIDEO (Twitter): download segments + merge in browser ──
+        filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
+        blob = await downloadM3u8Video(
+          format.url,
+          "output.mp4",
+          (p: FFmpegProgress) => {
+            switch (p.phase) {
+              case "loading":
+                setDownloadSpeed("Loading FFmpeg...");
+                setDownloadProgress(0);
+                break;
+              case "downloading_video":
+                setDownloadSpeed(p.message);
+                setDownloadProgress(Math.round(p.percent * 0.8)); // 0-80%
+                break;
+              case "merging":
+                setDownloadStatus("merging");
+                setDownloadSpeed("Converting to MP4...");
+                setDownloadProgress(80 + Math.round(p.percent * 0.2)); // 80-100%
                 break;
             }
           }

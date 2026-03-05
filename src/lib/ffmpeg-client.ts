@@ -223,3 +223,143 @@ export async function proxyDownload(
     };
     return new Blob([data as BlobPart], { type: mimeMap[ext || ""] || "application/octet-stream" });
 }
+
+/**
+ * Check if a URL is an m3u8/HLS stream
+ */
+export function isM3u8Url(url: string): boolean {
+    return url.includes(".m3u8") || url.includes("m3u8");
+}
+
+/**
+ * Download an m3u8/HLS video stream client-side.
+ * 1. Download m3u8 manifest via proxy
+ * 2. Parse segment URLs
+ * 3. Download all .ts segments
+ * 4. Use FFmpeg.wasm to concatenate into MP4
+ */
+export async function downloadM3u8Video(
+    m3u8Url: string,
+    outputFilename: string,
+    onProgress?: (p: FFmpegProgress) => void,
+): Promise<Blob> {
+    // 1. Load FFmpeg
+    const ffmpeg = await loadFFmpeg(onProgress);
+
+    // 2. Download the m3u8 manifest
+    onProgress?.({ phase: "downloading_video", percent: 0, message: "Fetching stream info..." });
+    const manifestData = await downloadViaProxy(m3u8Url, "manifest.m3u8");
+    const manifestText = new TextDecoder().decode(manifestData);
+
+    // 3. Parse the manifest - check if it's a master playlist or media playlist
+    const lines = manifestText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+
+    // Determine the base URL for resolving relative segment URLs
+    const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
+
+    // Check if this is a master playlist (contains #EXT-X-STREAM-INF)
+    const isMaster = lines.some(l => l.startsWith("#EXT-X-STREAM-INF"));
+
+    let mediaPlaylistUrl = m3u8Url;
+    let mediaManifestText = manifestText;
+
+    if (isMaster) {
+        // Pick the best quality variant (last stream URL is usually highest quality)
+        const variantUrls: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
+                // The next non-comment line is the URL
+                for (let j = i + 1; j < lines.length; j++) {
+                    if (!lines[j].startsWith("#")) {
+                        variantUrls.push(lines[j]);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (variantUrls.length === 0) {
+            throw new Error("No video streams found in m3u8 playlist");
+        }
+
+        // Use the last (highest bitrate) variant
+        const bestVariant = variantUrls[variantUrls.length - 1];
+        mediaPlaylistUrl = bestVariant.startsWith("http") ? bestVariant : baseUrl + bestVariant;
+
+        // Download the media playlist
+        const mediaData = await downloadViaProxy(mediaPlaylistUrl, "media.m3u8");
+        mediaManifestText = new TextDecoder().decode(mediaData);
+    }
+
+    // 4. Extract segment URLs from the media playlist
+    const mediaBaseUrl = mediaPlaylistUrl.substring(0, mediaPlaylistUrl.lastIndexOf("/") + 1);
+    const mediaLines = mediaManifestText.split("\n").map(l => l.trim());
+    const segmentUrls: string[] = [];
+
+    for (const line of mediaLines) {
+        if (line.length > 0 && !line.startsWith("#")) {
+            const segUrl = line.startsWith("http") ? line : mediaBaseUrl + line;
+            segmentUrls.push(segUrl);
+        }
+    }
+
+    if (segmentUrls.length === 0) {
+        throw new Error("No segments found in m3u8 playlist");
+    }
+
+    // 5. Download all segments
+    onProgress?.({ phase: "downloading_video", percent: 5, message: `Downloading ${segmentUrls.length} segments...` });
+
+    const segmentFiles: string[] = [];
+    for (let i = 0; i < segmentUrls.length; i++) {
+        const segFilename = `seg_${i.toString().padStart(4, "0")}.ts`;
+        const segData = await downloadViaProxy(segmentUrls[i], segFilename);
+        await ffmpeg.writeFile(segFilename, segData);
+        segmentFiles.push(segFilename);
+
+        const pct = 5 + Math.round((i / segmentUrls.length) * 70); // 5-75%
+        onProgress?.({
+            phase: "downloading_video",
+            percent: pct,
+            message: `Downloading segment ${i + 1}/${segmentUrls.length}...`,
+        });
+    }
+
+    // 6. Create a concat file for FFmpeg
+    const concatList = segmentFiles.map(f => `file '${f}'`).join("\n");
+    await ffmpeg.writeFile("concat.txt", new TextEncoder().encode(concatList));
+
+    // 7. Merge segments into MP4 using FFmpeg
+    onProgress?.({ phase: "merging", percent: 0, message: "Converting to MP4..." });
+
+    ffmpeg.on("progress", ({ progress }) => {
+        onProgress?.({
+            phase: "merging",
+            percent: Math.round(progress * 100),
+            message: `Converting... ${Math.round(progress * 100)}%`,
+        });
+    });
+
+    await ffmpeg.exec([
+        "-f", "concat",
+        "-safe", "0",
+        "-i", "concat.txt",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        outputFilename,
+    ]);
+
+    // 8. Read output
+    const outputData = await ffmpeg.readFile(outputFilename);
+
+    // Cleanup
+    try {
+        for (const f of segmentFiles) await ffmpeg.deleteFile(f);
+        await ffmpeg.deleteFile("concat.txt");
+        await ffmpeg.deleteFile(outputFilename);
+    } catch { /* ignore */ }
+
+    onProgress?.({ phase: "complete", percent: 100, message: "Done!" });
+    return new Blob([outputData as BlobPart], { type: "video/mp4" });
+}
