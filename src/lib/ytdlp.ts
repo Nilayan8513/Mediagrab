@@ -134,20 +134,35 @@ export interface MediaInfo {
 
 // ─── Analyze URL ──────────────────────────────────────────────────────────────
 // Strategy: yt-dlp first for ALL platforms (returns CDN URLs = cross-device).
-// Instagram: yt-dlp first → instaloader fallback (for photos/carousels yt-dlp misses).
-// Twitter/Facebook: yt-dlp WITHOUT cookies (cookies break these platforms).
+// Instagram: yt-dlp first → instaloader fallback.
+// Twitter/Facebook: yt-dlp WITHOUT cookies.
 
 export async function analyzeUrl(url: string): Promise<MediaInfo> {
     const platform = detectPlatform(url);
 
     // ── YouTube ──
     if (platform === "youtube") {
-        return analyzeWithYtDlp(url, platform);
+        try {
+            return await analyzeWithYtDlp(url, platform);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "";
+            // If it's a sign-in/bot error, give clear cookie instructions
+            if (msg.includes("Sign in") || msg.includes("bot")) {
+                throw new Error(
+                    "YouTube requires authentication for this video. " +
+                    "Please update your cookies.txt file with fresh YouTube cookies. " +
+                    "Use the \"Get cookies.txt LOCALLY\" browser extension while logged into YouTube."
+                );
+            }
+            throw err;
+        }
     }
 
-    // ── Instagram: yt-dlp first (CDN URLs work cross-device), instaloader fallback ──
+    // ── Instagram ──
     if (platform === "instagram") {
-        // Try yt-dlp first — returns CDN URLs that work on any device
+        const isStory = /instagram\.com\/stories\//i.test(url);
+
+        // Try yt-dlp first
         let ytdlpError = "";
         try {
             const result = await analyzeWithYtDlp(url, platform);
@@ -158,25 +173,33 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
             console.error("yt-dlp error for Instagram:", ytdlpError);
         }
 
-        // Fallback to instaloader (better for photos/carousels, but returns local paths)
-        const isStory = /instagram\.com\/stories\//i.test(url);
+        // Instaloader fallback (not for stories)
         if (!isStory) {
             try {
                 const result = await analyzeWithInstaloader(url, platform);
                 if (result.items.length > 0) return result;
             } catch (err) {
-                const msg = err instanceof Error ? err.message : "instaloader failed";
+                const msg = err instanceof Error ? err.message : "";
                 console.error("instaloader also failed:", msg);
             }
         }
 
+        // If login/cookie error, give clear instructions
+        if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
+            throw new Error(
+                `${isStory ? "Instagram Stories require" : "This Instagram post requires"} authentication. ` +
+                "Please update your cookies.txt with fresh Instagram cookies. " +
+                "Use the \"Get cookies.txt LOCALLY\" extension while logged into Instagram."
+            );
+        }
+
         throw new Error(
             `Could not extract media from this Instagram post. ` +
-            `It may be private or require login. (${ytdlpError})`
+            `It may be private or unavailable. (${ytdlpError})`
         );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp (NEVER use cookies — they break extraction) ──
+    // ── Twitter/X & Facebook: yt-dlp (NEVER use cookies) ──
     if (platform === "twitter" || platform === "facebook") {
         return analyzeWithYtDlp(url, platform);
     }
@@ -202,8 +225,14 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies?: b
             "--user-agent", USER_AGENT,
             "--extractor-retries", "3",
             "--socket-timeout", "30",
-            url,
         ];
+
+        // YouTube-specific: use web player client to bypass bot detection
+        if (platform === "youtube") {
+            args.push("--extractor-args", "youtube:player_client=web");
+        }
+
+        args.push(url);
 
         console.log(`[analyze] ${platform}: yt-dlp ${withCookies ? "with" : "without"} cookies`);
         const proc = spawn("yt-dlp", args);
@@ -217,9 +246,14 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies?: b
             if (code !== 0) {
                 console.error(`[analyze] yt-dlp failed (code ${code}) for ${platform}:`, stderr.substring(0, 500));
 
-                // If we used cookies and it failed, retry WITHOUT cookies
-                // (bad/expired cookies are the #1 cause of failures)
-                if (withCookies) {
+                // For auth errors ("Sign in", "login required") — DON'T retry without cookies
+                // because the content genuinely needs authentication
+                const isAuthError = stderr.includes("Sign in") ||
+                    stderr.includes("login") ||
+                    stderr.includes("log in") ||
+                    stderr.includes("authentication");
+
+                if (withCookies && !isAuthError) {
                     console.log(`[analyze] Retrying ${platform} without cookies...`);
                     analyzeWithYtDlp(url, platform, false).then(resolve, reject);
                     return;
@@ -264,7 +298,19 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies?: b
 
 function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaItem | null {
     const formats: MediaFormat[] = ((data.formats as Record<string, unknown>[]) || [])
-        .filter((f) => f.vcodec && f.vcodec !== "none")
+        .filter((f) => {
+            // Must have video codec
+            if (!f.vcodec || f.vcodec === "none") return false;
+            // Filter out m3u8/HLS streams (not playable as downloaded files)
+            const url = String(f.url || "");
+            if (url.includes(".m3u8") || url.includes("manifest")) return false;
+            const ext = String(f.ext || "");
+            if (ext === "m3u8" || ext === "m3u8_native") return false;
+            // Filter out dash manifest URLs
+            const protocol = String(f.protocol || "");
+            if (protocol.includes("m3u8") || protocol === "dash") return false;
+            return true;
+        })
         .map((f) => ({
             format_id: String(f.format_id || ""),
             quality: buildQualityLabel(f),
@@ -559,6 +605,7 @@ export function downloadVideo(
             "--force-ipv4",
             "--user-agent", USER_AGENT,
             "--extractor-retries", "3",
+            "--extractor-args", "youtube:player_client=web",
             "--newline",
             "-o",
             outTemplate,
