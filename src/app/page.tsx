@@ -62,6 +62,7 @@ export default function Home() {
     }
   };
 
+  // ─── Analyze ──────────────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async (url: string) => {
     setIsAnalyzing(true);
     setError(null);
@@ -97,57 +98,51 @@ export default function Home() {
     }
   }, []);
 
-  // ─── Determine if download can happen client-side ────────────────────────────
-  // Client-side: format has a CDN URL AND has audio (combined stream)
-  // Server-side: video-only formats (need merge), Instagram, gallery-dl
+  // ─── Download via Proxy (works on ALL devices/browsers) ──────────────────────
+  // ALL downloads go through /api/proxy which streams CDN → client.
+  // This avoids CORS issues and works identically on mobile, desktop, any browser.
 
-  function canDownloadClientSide(
-    item: MediaItem,
-    format: MediaFormat | null,
-    platform: string,
-  ): boolean {
-    // Instagram uses instaloader which returns local file paths, not CDN URLs
-    if (platform === "instagram") return false;
-
-    // Photos with CDN-looking direct URLs (not local file paths)
-    if (item.type === "photo" && item.direct_url && item.direct_url.startsWith("http")) {
-      return true;
-    }
-
-    // Videos with combined format (has audio) and a CDN URL
-    if (item.type === "video" && format && format.url && format.has_audio) {
-      return true;
-    }
-
-    return false;
-  }
-
-  // ─── Client-side download helper ─────────────────────────────────────────────
-  const clientDownload = useCallback(async (
-    url: string,
+  const proxyDownload = useCallback(async (
+    cdnUrl: string,
     filename: string,
     onProgress?: (percent: number) => void,
   ) => {
-    // Try direct download first
-    try {
-      const res = await fetch(url, { mode: "cors" });
-      if (res.ok && res.body) {
-        return await streamToBlob(res, filename, onProgress);
-      }
-    } catch {
-      // CORS blocked — fall back to proxy
-    }
-
-    // Fallback: use server proxy (lightweight — no disk buffering)
-    const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+    const proxyUrl = `/api/proxy?url=${encodeURIComponent(cdnUrl)}&filename=${encodeURIComponent(filename)}`;
     const res = await fetch(proxyUrl);
     if (!res.ok) {
-      throw new Error(`Download failed (${res.status})`);
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Download failed (${res.status})`);
     }
-    return await streamToBlob(res, filename, onProgress);
+
+    const contentLength = res.headers.get("Content-Length");
+    const total = contentLength ? parseInt(contentLength, 10) : 0;
+
+    if (!res.body) {
+      // No streaming — fallback to blob
+      const blob = await res.blob();
+      triggerDownload(blob, filename);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      if (total > 0 && onProgress) {
+        onProgress(Math.round((received / total) * 100));
+      }
+    }
+
+    const blob = new Blob(chunks as BlobPart[]);
+    triggerDownload(blob, filename);
   }, []);
 
-  // ─── Server-side download helper (for merging, Instagram, etc.) ──────────────
+  // ─── Server Download (yt-dlp merge, instaloader, etc.) ───────────────────────
   const serverDownload = useCallback(async (
     body: Record<string, unknown>,
     downloadId: string,
@@ -198,21 +193,39 @@ export default function Home() {
         ? (activeItem.formats.find(f => f.format_id === selectedFormat) || activeItem.formats[0])
         : null;
 
-      if (canDownloadClientSide(activeItem, format, mediaInfo.platform)) {
-        // ── CLIENT-SIDE DOWNLOAD ──
-        let downloadUrl = "";
+      // ── Check if we can use proxy download (CDN URL available + has audio) ──
+      // For photos: use proxy if direct_url is a CDN URL (http)
+      // For videos: use proxy only if format has BOTH video+audio (combined) and CDN URL
+      // Otherwise: fall back to server-side yt-dlp download (handles merging)
+
+      const canUseProxy = (() => {
+        // Instagram always uses server-side (instaloader/yt-dlp download)
+        if (mediaInfo.platform === "instagram") return false;
+
+        // Photo with CDN URL
+        if (activeItem.type === "photo" && activeItem.direct_url?.startsWith("http")) return true;
+
+        // Video with combined format (has audio) and CDN URL
+        if (format && format.url && format.has_audio) return true;
+
+        return false;
+      })();
+
+      if (canUseProxy) {
+        // ── PROXY DOWNLOAD (lightweight — server just pipes bytes) ──
+        let cdnUrl = "";
         let filename = "";
 
         if (activeItem.type === "photo" && activeItem.direct_url) {
-          downloadUrl = activeItem.direct_url;
+          cdnUrl = activeItem.direct_url;
           filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
-        } else if (format && format.url) {
-          downloadUrl = format.url;
+        } else if (format?.url) {
+          cdnUrl = format.url;
           filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
         }
 
-        if (downloadUrl) {
-          await clientDownload(downloadUrl, filename, (percent) => {
+        if (cdnUrl) {
+          await proxyDownload(cdnUrl, filename, (percent) => {
             setDownloadProgress(percent);
           });
           setDownloadStatus("complete");
@@ -221,7 +234,7 @@ export default function Home() {
         }
       }
 
-      // ── SERVER-SIDE DOWNLOAD (merging, Instagram, etc.) ──
+      // ── SERVER DOWNLOAD (yt-dlp with merge, instaloader, etc.) ──
       const downloadId = `dl_${Date.now()}`;
       const body: Record<string, unknown> = {
         url: mediaInfo.original_url,
@@ -236,9 +249,10 @@ export default function Home() {
         } else {
           body.directUrl = activeItem.direct_url;
         }
-      } else if (activeItem.type === "video" && activeItem.formats.length > 0) {
+      } else if (activeItem.type === "video") {
         if (mediaInfo.platform === "instagram") {
-          body.useInstaloader = true;
+          // Instagram video — use yt-dlp server download (better than instaloader for videos)
+          body.formatId = selectedFormat || "best";
         } else {
           body.formatId = selectedFormat;
         }
@@ -258,7 +272,7 @@ export default function Home() {
       setDownloadStatus("error");
       setError(err instanceof Error ? err.message : "Download failed");
     }
-  }, [mediaInfo, activeItem, selectedFormat, activeItemIndex, clientDownload, serverDownload]);
+  }, [mediaInfo, activeItem, selectedFormat, activeItemIndex, proxyDownload, serverDownload]);
 
   // ─── Audio Download (always server-side — needs ffmpeg) ──────────────────────
   const handleDownloadAudio = useCallback(async () => {
@@ -301,7 +315,7 @@ export default function Home() {
     }
   }, [mediaInfo]);
 
-  // ─── Download All (Carousel) ─────────────────────────────────────────────────
+  // ─── Download All (Carousel) — server-side for zip packaging ─────────────────
   const handleDownloadAll = useCallback(async () => {
     if (!mediaInfo) return;
 
@@ -309,7 +323,6 @@ export default function Home() {
     setDownloadStatus("downloading");
     setDownloadProgress(0);
 
-    // For carousels, use server-side (handles zip packaging)
     const eventSource = new EventSource(`/api/progress?id=${downloadId}`);
     eventSource.onmessage = (event) => {
       try {
@@ -464,38 +477,6 @@ export default function Home() {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async function streamToBlob(
-  res: Response,
-  filename: string,
-  onProgress?: (percent: number) => void,
-) {
-  const contentLength = res.headers.get("Content-Length");
-  const total = contentLength ? parseInt(contentLength, 10) : 0;
-
-  if (!res.body) {
-    const blob = await res.blob();
-    triggerDownload(blob, filename);
-    return;
-  }
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    if (total > 0 && onProgress) {
-      onProgress(Math.round((received / total) * 100));
-    }
-  }
-
-  const blob = new Blob(chunks as BlobPart[]);
-  triggerDownload(blob, filename);
-}
 
 function triggerDownload(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);

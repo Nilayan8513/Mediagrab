@@ -4,41 +4,36 @@ import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
 
 // ─── Cookie Handling ──────────────────────────────────────────────────────────
-// Priority:
-//   1. cookies.txt file in the project root (best — no locking issues)
-//   2. Browser cookies (tries Firefox first, then others)
-//
-// To export cookies.txt:
-//   Install "Get cookies.txt LOCALLY" Chrome extension, go to instagram.com
-//   while logged in, click the extension, export → save as cookies.txt
-//   in the project root (d:\django\media_downloader\cookies.txt)
+// Cookies are only useful for YouTube (age-restricted/private) and Instagram.
+// For Twitter/X and Facebook, cookies can actually BREAK extraction.
+// Strategy: only use cookies for platforms that need them.
 
 import { resolve } from "path";
 
 const COOKIES_FILE = resolve(process.cwd(), "cookies.txt");
 
+// Realistic browser User-Agent — critical for Twitter/Facebook/Instagram
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
 function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
-    // 1. Prefer YTDLP_COOKIES environment variable (Base64 encoded cookie string - perfect for Render)
+    // 1. Prefer YTDLP_COOKIES environment variable (Base64 encoded)
     if (process.env.YTDLP_COOKIES) {
         try {
             const tempDir = process.env.TEMP || process.env.TMP || "/tmp";
             const tempCookieFile = join(tempDir, "cookies_temp.txt");
-            // Decode the base64 string to a file at runtime
             writeFileSync(tempCookieFile, Buffer.from(process.env.YTDLP_COOKIES, 'base64').toString('utf8'));
-            console.log("Using cookies from YTDLP_COOKIES environment variable");
             return ["--cookies", tempCookieFile];
         } catch (err) {
             console.error("Failed to decode YTDLP_COOKIES env var:", err);
         }
     }
 
-    // 2. Fallback to cookies.txt file in project root
+    // 2. cookies.txt file in project root
     if (existsSync(COOKIES_FILE)) {
-        console.log("Using cookies from cookies.txt file");
         return ["--cookies", COOKIES_FILE];
     }
 
-    // 2. Try browser cookies (Firefox first — less likely to be locked)
+    // 3. Try browser cookies
     const browsers = ["firefox", "edge", "brave", "chrome", "chromium", "opera"];
     for (const browser of browsers) {
         try {
@@ -46,21 +41,30 @@ function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
                 timeout: 3000, stdio: "pipe",
             });
             if (check.status === 0) {
-                console.log(`Using browser cookies from: ${browser}`);
                 return ["--cookies-from-browser", browser];
             }
         } catch { continue; }
     }
 
-    console.log("No cookies available, proceeding without authentication.");
     return [];
 }
 
-function isCookieError(errorMsg: string): boolean {
+function shouldUseCookies(platform: Platform): boolean {
+    // Only use cookies for YouTube and Instagram — cookies BREAK Twitter/Facebook extraction
+    return platform === "youtube" || platform === "instagram";
+}
+
+function isRetryableError(errorMsg: string): boolean {
     return errorMsg.includes("Could not copy") ||
         errorMsg.includes("cookie") ||
         errorMsg.includes("Cookie") ||
-        errorMsg.includes("unable to copy cookie");
+        errorMsg.includes("unable to copy cookie") ||
+        errorMsg.includes("login") ||
+        errorMsg.includes("Sign in") ||
+        errorMsg.includes("HTTP Error 403") ||
+        errorMsg.includes("HTTP Error 429") ||
+        errorMsg.includes("Unsupported URL") ||
+        errorMsg.includes("is not a valid URL");
 }
 
 // ─── Platform Detection ───────────────────────────────────────────────────────
@@ -129,83 +133,79 @@ export interface MediaInfo {
 }
 
 // ─── Analyze URL ──────────────────────────────────────────────────────────────
-// Hybrid routing: each platform uses its best tool, with fallbacks.
-//   YouTube  → yt-dlp
-//   Instagram→ instaloader (photos/carousels) → yt-dlp fallback (videos)
-//   Twitter/X→ yt-dlp (videos only)
-//   Facebook → yt-dlp (videos only)
+// Strategy: yt-dlp first for ALL platforms (returns CDN URLs = cross-device).
+// Instagram: yt-dlp first → instaloader fallback (for photos/carousels yt-dlp misses).
+// Twitter/Facebook: yt-dlp WITHOUT cookies (cookies break these platforms).
 
 export async function analyzeUrl(url: string): Promise<MediaInfo> {
     const platform = detectPlatform(url);
 
-    // ── YouTube: yt-dlp is the best (and only) tool ──
+    // ── YouTube ──
     if (platform === "youtube") {
         return analyzeWithYtDlp(url, platform);
     }
 
-    // ── Instagram: try instaloader first (best for photos + carousels) ──
+    // ── Instagram: yt-dlp first (CDN URLs work cross-device), instaloader fallback ──
     if (platform === "instagram") {
-        // Stories can't be handled by instaloader without login credentials;
-        // route them directly through yt-dlp which handles public stories fine
-        const isStory = /instagram\.com\/stories\//i.test(url);
+        // Try yt-dlp first — returns CDN URLs that work on any device
+        let ytdlpError = "";
+        try {
+            const result = await analyzeWithYtDlp(url, platform);
+            if (result.items.length > 0) return result;
+            ytdlpError = "yt-dlp returned 0 items";
+        } catch (err) {
+            ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
+            console.error("yt-dlp error for Instagram:", ytdlpError);
+        }
 
+        // Fallback to instaloader (better for photos/carousels, but returns local paths)
+        const isStory = /instagram\.com\/stories\//i.test(url);
         if (!isStory) {
-            let instaloaderError = "";
             try {
                 const result = await analyzeWithInstaloader(url, platform);
                 if (result.items.length > 0) return result;
-                instaloaderError = "instaloader returned 0 items";
             } catch (err) {
-                instaloaderError = err instanceof Error ? err.message : "instaloader failed";
-                console.error("instaloader error:", instaloaderError);
-            }
-
-            // Fallback to yt-dlp (handles Instagram videos/reels better)
-            try {
-                return await analyzeWithYtDlp(url, platform);
-            } catch (ytdlpError) {
-                const msg = ytdlpError instanceof Error ? ytdlpError.message : "";
-                console.error("yt-dlp also failed for Instagram:", msg);
-                throw new Error(
-                    `Could not extract media from this Instagram post. ` +
-                    `instaloader: ${instaloaderError}. yt-dlp: ${msg}. ` +
-                    `The post may be private or require login.`
-                );
+                const msg = err instanceof Error ? err.message : "instaloader failed";
+                console.error("instaloader also failed:", msg);
             }
         }
 
-        // Stories → yt-dlp directly
-        try {
-            return await analyzeWithYtDlp(url, platform);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : "";
-            throw new Error(
-                `Could not download this Instagram story. It may be expired, private, or require login. (${msg})`
-            );
-        }
+        throw new Error(
+            `Could not extract media from this Instagram post. ` +
+            `It may be private or require login. (${ytdlpError})`
+        );
     }
 
-    // ── Twitter/X & Facebook: yt-dlp only (videos) ──
+    // ── Twitter/X & Facebook: yt-dlp (NEVER use cookies — they break extraction) ──
     if (platform === "twitter" || platform === "facebook") {
         return analyzeWithYtDlp(url, platform);
     }
 
-    // ── Unknown platform ──
     throw new Error("Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook.");
 }
 
 // ─── Analyze with yt-dlp ──────────────────────────────────────────────────────
 
-async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = true): Promise<MediaInfo> {
+async function analyzeWithYtDlp(url: string, platform: Platform, withCookies?: boolean): Promise<MediaInfo> {
+    // Default: use cookies only for YouTube/Instagram, NEVER for Twitter/Facebook
+    if (withCookies === undefined) {
+        withCookies = shouldUseCookies(platform);
+    }
+
     return new Promise((resolve, reject) => {
         const args = [
             ...(withCookies ? getCookieArgs("yt-dlp") : []),
-            "--dump-single-json", // Single JSON even for playlists
+            "--dump-single-json",
             "--no-warnings",
             "--no-check-certificates",
+            "--force-ipv4",
+            "--user-agent", USER_AGENT,
+            "--extractor-retries", "3",
+            "--socket-timeout", "30",
             url,
         ];
 
+        console.log(`[analyze] ${platform}: yt-dlp ${withCookies ? "with" : "without"} cookies`);
         const proc = spawn("yt-dlp", args);
         let stdout = "";
         let stderr = "";
@@ -215,9 +215,12 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = t
 
         proc.on("close", (code) => {
             if (code !== 0) {
-                // If the error is cookie-related and we used cookies, retry without them
-                if (withCookies && isCookieError(stderr)) {
-                    console.log("yt-dlp cookie error detected, retrying without cookies...");
+                console.error(`[analyze] yt-dlp failed (code ${code}) for ${platform}:`, stderr.substring(0, 500));
+
+                // If we used cookies and it failed, retry WITHOUT cookies
+                // (bad/expired cookies are the #1 cause of failures)
+                if (withCookies) {
+                    console.log(`[analyze] Retrying ${platform} without cookies...`);
                     analyzeWithYtDlp(url, platform, false).then(resolve, reject);
                     return;
                 }
@@ -229,14 +232,12 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = t
                 const data = JSON.parse(stdout);
                 const items: MediaItem[] = [];
 
-                // Check if it's a playlist (carousel)
                 if (data.entries && Array.isArray(data.entries)) {
                     data.entries.forEach((entry: Record<string, unknown>, idx: number) => {
                         const item = parseYtDlpEntry(entry, idx);
                         if (item) items.push(item);
                     });
                 } else {
-                    // Single item
                     const item = parseYtDlpEntry(data, 0);
                     if (item) items.push(item);
                 }
@@ -257,7 +258,7 @@ async function analyzeWithYtDlp(url: string, platform: Platform, withCookies = t
             reject(new Error(`Failed to run yt-dlp: ${err.message}. Is yt-dlp installed?`));
         });
 
-        setTimeout(() => { proc.kill(); reject(new Error("yt-dlp timed out")); }, 60000);
+        setTimeout(() => { proc.kill(); reject(new Error("yt-dlp timed out")); }, 90000);
     });
 }
 
@@ -354,8 +355,8 @@ async function analyzeWithGalleryDl(url: string, platform: Platform, withCookies
 
             if (code !== 0 && !stdout.trim()) {
                 // If cookie-related error, retry without cookies
-                if (withCookies && isCookieError(stderr)) {
-                    console.log("gallery-dl cookie error detected, retrying without cookies...");
+                if (withCookies && isRetryableError(stderr)) {
+                    console.log("gallery-dl error detected, retrying without cookies...");
                     analyzeWithGalleryDl(url, platform, false).then(resolve, reject);
                     return;
                 }
@@ -555,6 +556,9 @@ export function downloadVideo(
             "mp4",
             "--no-warnings",
             "--no-check-certificates",
+            "--force-ipv4",
+            "--user-agent", USER_AGENT,
+            "--extractor-retries", "3",
             "--newline",
             "-o",
             outTemplate,
@@ -639,6 +643,9 @@ export function downloadAudio(
             "--audio-quality", "0",  // best quality
             "--no-warnings",
             "--no-check-certificates",
+            "--force-ipv4",
+            "--user-agent", USER_AGENT,
+            "--extractor-retries", "3",
             "--newline",
             "-o",
             outTemplate,
