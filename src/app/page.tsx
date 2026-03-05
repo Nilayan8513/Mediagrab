@@ -12,6 +12,8 @@ interface MediaFormat {
   quality: string;
   ext: string;
   filesize: number | null;
+  url: string | null;
+  has_audio: boolean;
 }
 
 interface MediaItem {
@@ -21,6 +23,7 @@ interface MediaItem {
   duration: number | null;
   formats: MediaFormat[];
   direct_url: string | null;
+  audio_url: string | null;
   index: number;
 }
 
@@ -94,6 +97,170 @@ export default function Home() {
     }
   }, []);
 
+  // ─── Determine if download can happen client-side ────────────────────────────
+  // Client-side: format has a CDN URL AND has audio (combined stream)
+  // Server-side: video-only formats (need merge), Instagram, gallery-dl
+
+  function canDownloadClientSide(
+    item: MediaItem,
+    format: MediaFormat | null,
+    platform: string,
+  ): boolean {
+    // Instagram uses instaloader which returns local file paths, not CDN URLs
+    if (platform === "instagram") return false;
+
+    // Photos with CDN-looking direct URLs (not local file paths)
+    if (item.type === "photo" && item.direct_url && item.direct_url.startsWith("http")) {
+      return true;
+    }
+
+    // Videos with combined format (has audio) and a CDN URL
+    if (item.type === "video" && format && format.url && format.has_audio) {
+      return true;
+    }
+
+    return false;
+  }
+
+  // ─── Client-side download helper ─────────────────────────────────────────────
+  const clientDownload = useCallback(async (
+    url: string,
+    filename: string,
+    onProgress?: (percent: number) => void,
+  ) => {
+    // Try direct download first
+    try {
+      const res = await fetch(url, { mode: "cors" });
+      if (res.ok && res.body) {
+        return await streamToBlob(res, filename, onProgress);
+      }
+    } catch {
+      // CORS blocked — fall back to proxy
+    }
+
+    // Fallback: use server proxy (lightweight — no disk buffering)
+    const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+    const res = await fetch(proxyUrl);
+    if (!res.ok) {
+      throw new Error(`Download failed (${res.status})`);
+    }
+    return await streamToBlob(res, filename, onProgress);
+  }, []);
+
+  // ─── Server-side download helper (for merging, Instagram, etc.) ──────────────
+  const serverDownload = useCallback(async (
+    body: Record<string, unknown>,
+    downloadId: string,
+  ) => {
+    const eventSource = new EventSource(`/api/progress?id=${downloadId}`);
+    eventSource.onmessage = (event) => {
+      try {
+        const progress = JSON.parse(event.data);
+        setDownloadProgress(progress.percent);
+        setDownloadSpeed(progress.speed || "");
+        setDownloadEta(progress.eta || "");
+        if (progress.status === "merging") setDownloadStatus("merging");
+      } catch { /* ignore */ }
+    };
+
+    try {
+      const res = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      eventSource.close();
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Download failed");
+      }
+
+      await triggerBlobDownload(res);
+    } finally {
+      eventSource.close();
+    }
+  }, []);
+
+  // ─── Main Download Handler ──────────────────────────────────────────────────
+  const handleDownloadItem = useCallback(async () => {
+    if (!mediaInfo || !activeItem) return;
+
+    setDownloadStatus("downloading");
+    setDownloadProgress(0);
+    setDownloadSpeed("");
+    setDownloadEta("");
+    setError(null);
+
+    try {
+      const format = activeItem.type === "video" && activeItem.formats.length > 0
+        ? (activeItem.formats.find(f => f.format_id === selectedFormat) || activeItem.formats[0])
+        : null;
+
+      if (canDownloadClientSide(activeItem, format, mediaInfo.platform)) {
+        // ── CLIENT-SIDE DOWNLOAD ──
+        let downloadUrl = "";
+        let filename = "";
+
+        if (activeItem.type === "photo" && activeItem.direct_url) {
+          downloadUrl = activeItem.direct_url;
+          filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
+        } else if (format && format.url) {
+          downloadUrl = format.url;
+          filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
+        }
+
+        if (downloadUrl) {
+          await clientDownload(downloadUrl, filename, (percent) => {
+            setDownloadProgress(percent);
+          });
+          setDownloadStatus("complete");
+          setDownloadProgress(100);
+          return;
+        }
+      }
+
+      // ── SERVER-SIDE DOWNLOAD (merging, Instagram, etc.) ──
+      const downloadId = `dl_${Date.now()}`;
+      const body: Record<string, unknown> = {
+        url: mediaInfo.original_url,
+        downloadId,
+        itemType: activeItem.type,
+        itemIndex: activeItem.index,
+      };
+
+      if (activeItem.type === "photo" && activeItem.direct_url) {
+        if (mediaInfo.platform === "instagram") {
+          body.useInstaloader = true;
+        } else {
+          body.directUrl = activeItem.direct_url;
+        }
+      } else if (activeItem.type === "video" && activeItem.formats.length > 0) {
+        if (mediaInfo.platform === "instagram") {
+          body.useInstaloader = true;
+        } else {
+          body.formatId = selectedFormat;
+        }
+      } else if (activeItem.direct_url) {
+        body.directUrl = activeItem.direct_url;
+        if (mediaInfo.platform === "instagram") {
+          body.useInstaloader = true;
+        } else {
+          body.useGalleryDl = true;
+        }
+      }
+
+      await serverDownload(body, downloadId);
+      setDownloadStatus("complete");
+      setDownloadProgress(100);
+    } catch (err) {
+      setDownloadStatus("error");
+      setError(err instanceof Error ? err.message : "Download failed");
+    }
+  }, [mediaInfo, activeItem, selectedFormat, activeItemIndex, clientDownload, serverDownload]);
+
+  // ─── Audio Download (always server-side — needs ffmpeg) ──────────────────────
   const handleDownloadAudio = useCallback(async () => {
     if (!mediaInfo) return;
     const downloadId = `audio_${Date.now()}`;
@@ -134,75 +301,7 @@ export default function Home() {
     }
   }, [mediaInfo]);
 
-  const handleDownloadItem = useCallback(async () => {
-    if (!mediaInfo || !activeItem) return;
-
-    const downloadId = `dl_${Date.now()}`;
-    setDownloadStatus("downloading");
-    setDownloadProgress(0);
-    setDownloadSpeed("");
-    setDownloadEta("");
-
-    const eventSource = new EventSource(`/api/progress?id=${downloadId}`);
-
-    eventSource.onmessage = (event) => {
-      try {
-        const progress = JSON.parse(event.data);
-        setDownloadProgress(progress.percent);
-        setDownloadSpeed(progress.speed || "");
-        setDownloadEta(progress.eta || "");
-        if (progress.status === "merging") setDownloadStatus("merging");
-      } catch { /* ignore */ }
-    };
-
-    try {
-      const body: Record<string, unknown> = {
-        url: mediaInfo.original_url,
-        downloadId,
-        itemType: activeItem.type,
-        itemIndex: activeItem.index,
-      };
-
-      if (activeItem.type === "photo" && activeItem.direct_url) {
-        if (mediaInfo.platform === "instagram") {
-          body.useInstaloader = true;
-        } else {
-          body.directUrl = activeItem.direct_url;
-        }
-      } else if (activeItem.type === "video" && activeItem.formats.length > 0) {
-        body.formatId = selectedFormat;
-      } else if (activeItem.direct_url) {
-        body.directUrl = activeItem.direct_url;
-        if (mediaInfo.platform === "instagram") {
-          body.useInstaloader = true;
-        } else {
-          body.useGalleryDl = true;
-        }
-      }
-
-      const res = await fetch("/api/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      eventSource.close();
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Download failed");
-      }
-
-      await triggerBlobDownload(res);
-      setDownloadStatus("complete");
-      setDownloadProgress(100);
-    } catch (err) {
-      eventSource.close();
-      setDownloadStatus("error");
-      setError(err instanceof Error ? err.message : "Download failed");
-    }
-  }, [mediaInfo, activeItem, selectedFormat]);
-
+  // ─── Download All (Carousel) ─────────────────────────────────────────────────
   const handleDownloadAll = useCallback(async () => {
     if (!mediaInfo) return;
 
@@ -210,6 +309,7 @@ export default function Home() {
     setDownloadStatus("downloading");
     setDownloadProgress(0);
 
+    // For carousels, use server-side (handles zip packaging)
     const eventSource = new EventSource(`/api/progress?id=${downloadId}`);
     eventSource.onmessage = (event) => {
       try {
@@ -241,7 +341,6 @@ export default function Home() {
         throw new Error(data.error || "Download failed");
       }
 
-      // Server now returns a single ZIP for multiple files
       await triggerBlobDownload(res);
       setDownloadStatus("complete");
       setDownloadProgress(100);
@@ -366,14 +465,39 @@ export default function Home() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function triggerBlobDownload(res: Response) {
-  const blob = await res.blob();
-  const disposition = res.headers.get("Content-Disposition");
-  let filename = "download.mp4";
-  if (disposition) {
-    const match = disposition.match(/filename="?(.+?)"?$/);
-    if (match) filename = decodeURIComponent(match[1]);
+async function streamToBlob(
+  res: Response,
+  filename: string,
+  onProgress?: (percent: number) => void,
+) {
+  const contentLength = res.headers.get("Content-Length");
+  const total = contentLength ? parseInt(contentLength, 10) : 0;
+
+  if (!res.body) {
+    const blob = await res.blob();
+    triggerDownload(blob, filename);
+    return;
   }
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (total > 0 && onProgress) {
+      onProgress(Math.round((received / total) * 100));
+    }
+  }
+
+  const blob = new Blob(chunks as BlobPart[]);
+  triggerDownload(blob, filename);
+}
+
+function triggerDownload(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = blobUrl;
@@ -382,4 +506,15 @@ async function triggerBlobDownload(res: Response) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(blobUrl);
+}
+
+async function triggerBlobDownload(res: Response) {
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition");
+  let filename = "download.mp4";
+  if (disposition) {
+    const match = disposition.match(/filename="?(.+?)"?$/);
+    if (match) filename = decodeURIComponent(match[1]);
+  }
+  triggerDownload(blob, filename);
 }

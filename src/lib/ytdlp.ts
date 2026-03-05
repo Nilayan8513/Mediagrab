@@ -105,6 +105,8 @@ export interface MediaFormat {
     acodec: string | null;
     height: number | null;
     fps: number | null;
+    url: string | null;        // Direct CDN download URL
+    has_audio: boolean;        // Whether this format includes audio
 }
 
 export interface MediaItem {
@@ -114,6 +116,7 @@ export interface MediaItem {
     duration: number | null;
     formats: MediaFormat[];
     direct_url: string | null; // For photos: direct image URL
+    audio_url: string | null;  // Best audio stream URL (for separate video+audio)
     index: number;
 }
 
@@ -271,6 +274,8 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
             acodec: f.acodec ? String(f.acodec) : null,
             height: (f.height as number) || null,
             fps: (f.fps as number) || null,
+            url: f.url ? String(f.url) : null,
+            has_audio: !!(f.acodec && f.acodec !== "none"),
         }))
         .sort((a, b) => (b.height || 0) - (a.height || 0));
 
@@ -284,6 +289,15 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
 
     const finalFormats = uniqueFormats.length > 0 ? uniqueFormats : formats.length > 0 ? [formats[0]] : [];
 
+    // Extract best audio-only stream URL for separate video+audio downloads
+    let audioUrl: string | null = null;
+    const audioFormats = ((data.formats as Record<string, unknown>[]) || [])
+        .filter((f) => f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none"))
+        .sort((a, b) => ((b.abr as number) || 0) - ((a.abr as number) || 0));
+    if (audioFormats.length > 0 && audioFormats[0].url) {
+        audioUrl = String(audioFormats[0].url);
+    }
+
     return {
         type: finalFormats.length > 0 ? "video" : "photo",
         title: String(data.title || data.description || "Untitled"),
@@ -291,6 +305,7 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
         duration: (data.duration as number) || null,
         formats: finalFormats,
         direct_url: finalFormats.length === 0 ? String(data.url || data.thumbnail || "") : null,
+        audio_url: audioUrl,
         index,
     };
 }
@@ -459,9 +474,12 @@ async function analyzeWithGalleryDl(url: string, platform: Platform, withCookies
                                     acodec: null,
                                     height: (meta.height as number) || null,
                                     fps: null,
+                                    url: mediaUrl,
+                                    has_audio: true,
                                 }]
                                 : [],
                             direct_url: mediaUrl,
+                            audio_url: null,
                             index: items.length,
                         });
                     }
@@ -526,10 +544,13 @@ export function downloadVideo(
         const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
         const outTemplate = `${tmpDir}/mediagrab_${downloadId}.%(ext)s`;
 
+        // Prioritize H.264/VP9 for best compatibility with high quality (1080p-1440p)
+        const defaultFormat = "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]/best";
+
         const args = [
             ...getCookieArgs("yt-dlp"),
             "-f",
-            formatId ? `${formatId}+bestaudio/best/${formatId}` : "best",
+            formatId ? `${formatId}+bestaudio/best/${formatId}` : defaultFormat,
             "--merge-output-format",
             "mp4",
             "--no-warnings",

@@ -138,9 +138,12 @@ export async function analyzeWithInstaloader(
                                     acodec: null,
                                     height: null,
                                     fps: null,
+                                    url: null,
+                                    has_audio: true,
                                 }]
                                 : [],
                             direct_url: filePath,
+                            audio_url: null,
                             index: i,
                         });
                     }

@@ -2,11 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { downloadVideo, downloadAudio, downloadPhoto, downloadWithGalleryDl, clearProgress, setProgress } from "@/lib/ytdlp";
 import { downloadWithInstaloader } from "@/lib/instaloader";
 import { randomUUID } from "crypto";
-import { createReadStream, unlinkSync, statSync, existsSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { createReadStream, unlinkSync, statSync, existsSync, readdirSync, rmSync } from "fs";
 import { join, basename } from "path";
 import archiver from "archiver";
 import { createWriteStream } from "fs";
 
+/**
+ * Server-side download — used for:
+ *   1. Audio extraction (needs ffmpeg)
+ *   2. Video-only formats that need audio merging (YouTube 1080p+ etc.)
+ *   3. Instagram downloads (instaloader)
+ *   4. Gallery-dl downloads
+ * 
+ * Client-side download handles: combined video+audio formats, direct photo URLs
+ */
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
@@ -51,13 +60,13 @@ export async function POST(request: NextRequest) {
             filename = result.filename;
             isDirectory = result.isZip || false;
         } else {
+            // Video download with merge (for video-only formats needing audio)
             const result = await downloadVideo(url, formatId || "", downloadId);
             filePath = result.filePath;
             filename = result.filename;
         }
 
         if (isDirectory) {
-            // Multiple files in directory — create a ZIP
             const files = findFilesRecursive(filePath);
 
             if (files.length === 0) {
@@ -65,22 +74,16 @@ export async function POST(request: NextRequest) {
             }
 
             if (files.length === 1) {
-                // Single file in directory — stream it directly
                 return streamFile(files[0], basename(files[0]), downloadId, filePath);
             }
 
-            // Create ZIP from multiple files
             setProgress(downloadId, { percent: 95, speed: "", eta: "", status: "merging" });
             const zipPath = await createZip(files, downloadId);
             const zipFilename = `mediagrab_${downloadId}.zip`;
-
-            // Cleanup the source directory
             try { rmSync(filePath, { recursive: true, force: true }); } catch { /* ignore */ }
-
             return streamFile(zipPath, zipFilename, downloadId);
         }
 
-        // Single file: stream it
         return streamFile(filePath, filename, downloadId);
     } catch (error) {
         const message = error instanceof Error ? error.message : "Download failed";
@@ -89,7 +92,6 @@ export async function POST(request: NextRequest) {
     }
 }
 
-// Create a ZIP file from multiple files
 function createZip(files: string[], downloadId: string): Promise<string> {
     return new Promise((resolve, reject) => {
         const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
@@ -101,11 +103,9 @@ function createZip(files: string[], downloadId: string): Promise<string> {
         archive.on("error", (err) => reject(err));
 
         archive.pipe(output);
-
         for (const file of files) {
             archive.file(file, { name: basename(file) });
         }
-
         archive.finalize();
     });
 }
@@ -116,17 +116,10 @@ function streamFile(filePath: string, filename: string, downloadId: string, clea
 
     const ext = filename.split(".").pop()?.toLowerCase();
     const mimeMap: Record<string, string> = {
-        mp4: "video/mp4",
-        webm: "video/webm",
-        mkv: "video/x-matroska",
-        mp3: "audio/mpeg",
-        m4a: "audio/mp4",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        png: "image/png",
-        webp: "image/webp",
-        gif: "image/gif",
-        zip: "application/zip",
+        mp4: "video/mp4", webm: "video/webm", mkv: "video/x-matroska",
+        mp3: "audio/mpeg", m4a: "audio/mp4",
+        jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+        webp: "image/webp", gif: "image/gif", zip: "application/zip",
     };
     const contentType = mimeMap[ext || ""] || "application/octet-stream";
 

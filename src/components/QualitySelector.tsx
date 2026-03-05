@@ -3,6 +3,7 @@ interface Format {
     quality: string;
     ext: string;
     filesize: number | null;
+    has_audio?: boolean;
 }
 
 interface QualitySelectorProps {
@@ -35,11 +36,13 @@ export default function QualitySelector({ formats, selectedFormat, onSelect, dis
             >
                 {formats.map((f) => (
                     <option key={f.format_id} value={f.format_id}>
-                        {f.quality} • {f.ext.toUpperCase()}
+                        {f.has_audio ? "🔊 " : "📹 "}{f.quality} • {f.ext.toUpperCase()}
                         {f.filesize ? ` • ~${formatSize(f.filesize)}` : ""}
+                        {f.has_audio === false ? " (video only)" : ""}
                     </option>
                 ))}
             </select>
         </div>
     );
 }
+
