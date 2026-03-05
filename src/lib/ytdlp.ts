@@ -2,11 +2,11 @@ import { spawn, spawnSync } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
+import { analyzeWithCobalt } from "./cobalt";
 
 // ─── Cookie Handling ──────────────────────────────────────────────────────────
-// Cookies are only useful for YouTube (age-restricted/private) and Instagram.
-// For Twitter/X and Facebook, cookies can actually BREAK extraction.
-// Strategy: only use cookies for platforms that need them.
+// Cookies used for all platforms (YouTube, Instagram, Twitter/X, Facebook).
+// Strategy: try with cookies first, retry without on non-auth failures.
 
 import { resolve } from "path";
 
@@ -140,21 +140,32 @@ export interface MediaInfo {
 export async function analyzeUrl(url: string): Promise<MediaInfo> {
     const platform = detectPlatform(url);
 
-    // ── YouTube ──
+    // ── YouTube: yt-dlp first, Cobalt fallback ──
     if (platform === "youtube") {
         try {
             return await analyzeWithYtDlp(url, platform);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : "";
-            // If it's a sign-in/bot error, give clear cookie instructions
-            if (msg.includes("Sign in") || msg.includes("bot")) {
+        } catch (ytdlpErr) {
+            const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "";
+            console.error("yt-dlp failed for YouTube:", ytdlpMsg);
+
+            // Fallback to Cobalt API (handles YouTube when yt-dlp signature is broken)
+            try {
+                console.log("[analyze] Trying Cobalt API fallback for YouTube...");
+                const cobaltResult = await analyzeWithCobalt(url);
+                if (cobaltResult.items.length > 0) return cobaltResult;
+            } catch (cobaltErr) {
+                const cobaltMsg = cobaltErr instanceof Error ? cobaltErr.message : "";
+                console.error("Cobalt also failed:", cobaltMsg);
+            }
+
+            // Both failed — give clear error
+            if (ytdlpMsg.includes("Sign in") || ytdlpMsg.includes("bot")) {
                 throw new Error(
-                    "YouTube requires authentication for this video. " +
-                    "Please update your cookies.txt file with fresh YouTube cookies. " +
-                    "Use the \"Get cookies.txt LOCALLY\" browser extension while logged into YouTube."
+                    "YouTube requires authentication. " +
+                    "Please update your cookies.txt with fresh YouTube cookies."
                 );
             }
-            throw err;
+            throw new Error(`YouTube download failed. ${ytdlpMsg}`);
         }
     }
 
@@ -301,14 +312,8 @@ function parseYtDlpEntry(data: Record<string, unknown>, index: number): MediaIte
         .filter((f) => {
             // Must have video codec
             if (!f.vcodec || f.vcodec === "none") return false;
-            // Filter out m3u8/HLS streams (not playable as downloaded files)
-            const url = String(f.url || "");
-            if (url.includes(".m3u8") || url.includes("manifest")) return false;
-            const ext = String(f.ext || "");
-            if (ext === "m3u8" || ext === "m3u8_native") return false;
-            // Filter out dash manifest URLs
-            const protocol = String(f.protocol || "");
-            if (protocol.includes("m3u8") || protocol === "dash") return false;
+            // Keep all formats — Twitter uses m3u8_native for ALL its formats
+            // and yt-dlp handles downloading them correctly via server-side
             return true;
         })
         .map((f) => ({
