@@ -132,81 +132,70 @@ export default function Home() {
       let filename: string;
 
       if (activeItem.type === "photo") {
-        // ── PHOTO: proxy download ──
+        // ── PHOTO: client-side proxy ──
         const cdnUrl = activeItem.direct_url;
-        if (!cdnUrl || !cdnUrl.startsWith("http")) {
-          throw new Error("No download URL available for this photo");
-        }
+        if (!cdnUrl || !cdnUrl.startsWith("http")) throw new Error("No download URL available for this photo");
         filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
-        blob = await proxyDownload(cdnUrl, filename, (pct) => {
-          setDownloadProgress(pct);
+        blob = await proxyDownload(cdnUrl, filename, (pct) => setDownloadProgress(pct));
+
+      } else if ((mediaInfo.platform === "twitter" || mediaInfo.platform === "facebook") && activeItem.type === "video") {
+        // ── TWITTER/FACEBOOK VIDEO: server yt-dlp (m3u8 URLs expire, can't proxy) ──
+        filename = `${mediaInfo.platform}_video_${format?.quality || "best"}.mp4`;
+        setDownloadSpeed("Downloading via server...");
+        const downloadId = `dl_${Date.now()}`;
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: mediaInfo.original_url,
+            downloadId,
+            formatId: selectedFormat || "",
+            itemType: "video",
+            itemIndex: activeItem.index,
+          }),
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ error: "Download failed" }));
+          throw new Error(errData.error || "Download failed");
+        }
+        blob = await res.blob();
+
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
-        // ── VIDEO-ONLY (separate video+audio): merge in browser via FFmpeg.wasm ──
+        // ── VIDEO-ONLY: merge video+audio in browser via FFmpeg.wasm ──
         filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
-        blob = await mergeVideoAudio(
-          format.url,
-          activeItem.audio_url,
-          "output.mp4",
-          (p: FFmpegProgress) => {
-            switch (p.phase) {
-              case "loading":
-                setDownloadSpeed("Loading FFmpeg...");
-                setDownloadProgress(0);
-                break;
-              case "downloading_video":
-                setDownloadSpeed("Downloading video...");
-                setDownloadProgress(Math.round(p.percent * 0.4));
-                break;
-              case "downloading_audio":
-                setDownloadSpeed("Downloading audio...");
-                setDownloadProgress(40 + Math.round(p.percent * 0.2));
-                break;
-              case "merging":
-                setDownloadStatus("merging");
-                setDownloadSpeed("Merging in browser...");
-                setDownloadProgress(60 + Math.round(p.percent * 0.4));
-                break;
-            }
+        blob = await mergeVideoAudio(format.url, activeItem.audio_url, "output.mp4", (p: FFmpegProgress) => {
+          switch (p.phase) {
+            case "loading":
+              setDownloadSpeed("Loading FFmpeg...");
+              setDownloadProgress(0);
+              break;
+            case "downloading_video":
+              setDownloadSpeed("Downloading video...");
+              setDownloadProgress(Math.round(p.percent * 0.4));
+              break;
+            case "downloading_audio":
+              setDownloadSpeed("Downloading audio...");
+              setDownloadProgress(40 + Math.round(p.percent * 0.2));
+              break;
+            case "merging":
+              setDownloadStatus("merging");
+              setDownloadSpeed("Merging in browser...");
+              setDownloadProgress(60 + Math.round(p.percent * 0.4));
+              break;
           }
-        );
-      } else if (format && format.url && isM3u8Url(format.url)) {
-        // ── HLS/m3u8 VIDEO (Twitter): download segments + merge in browser ──
-        filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
-        blob = await downloadM3u8Video(
-          format.url,
-          "output.mp4",
-          (p: FFmpegProgress) => {
-            switch (p.phase) {
-              case "loading":
-                setDownloadSpeed("Loading FFmpeg...");
-                setDownloadProgress(0);
-                break;
-              case "downloading_video":
-                setDownloadSpeed(p.message);
-                setDownloadProgress(Math.round(p.percent * 0.8)); // 0-80%
-                break;
-              case "merging":
-                setDownloadStatus("merging");
-                setDownloadSpeed("Converting to MP4...");
-                setDownloadProgress(80 + Math.round(p.percent * 0.2)); // 80-100%
-                break;
-            }
-          }
-        );
-      } else if (format && format.url) {
-        // ── VIDEO with URL (combined or any): proxy download ──
-        filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
-        blob = await proxyDownload(format.url, filename, (pct) => {
-          setDownloadProgress(pct);
         });
+
+      } else if (format && format.url) {
+        // ── VIDEO with direct URL: client-side proxy ──
+        filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
+        blob = await proxyDownload(format.url, filename, (pct) => setDownloadProgress(pct));
+
       } else if (activeItem.direct_url?.startsWith("http")) {
         // ── Fallback: direct URL ──
         const ext = (activeItem.type as string) === "photo" ? "jpg" : "mp4";
         filename = `${mediaInfo.platform}_media_${activeItemIndex + 1}.${ext}`;
-        blob = await proxyDownload(activeItem.direct_url, filename, (pct) => {
-          setDownloadProgress(pct);
-        });
+        blob = await proxyDownload(activeItem.direct_url, filename, (pct) => setDownloadProgress(pct));
+
       } else {
         throw new Error("No download URL available for this item");
       }

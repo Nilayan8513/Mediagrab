@@ -1,0 +1,17 @@
+﻿yt-dlp : ERROR: [twitter] 
+1897359068590772485: No video could 
+be found in this tweet
+At line:1 char:1
++ yt-dlp --cookies cookies.txt 
+--dump-single-json --force-ipv4 
+"https:/ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpe 
+   cified: (ERROR: [twitter...d in   
+  this tweet:String) [], RemoteExc   
+ eption
+    + FullyQualifiedErrorId : Native 
+   CommandError
+ 
+null
