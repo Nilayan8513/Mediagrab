@@ -1,8 +1,55 @@
 // src/app/api/youtube-innertube/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { Innertube } from "youtubei.js";
+import { existsSync, readFileSync } from "fs";
+import { resolve } from "path";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function parseCookiesTxt(content: string): string {
+    const cookies: string[] = [];
+    for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const parts = trimmed.split("\t");
+        if (parts.length < 7) continue;
+        const [domain, , , , , name, value] = parts;
+        if (domain.includes("youtube.com") && name && value) {
+            cookies.push(`${name}=${value}`);
+        }
+    }
+    return cookies.join("; ");
+}
+
+function getYouTubeCookieString(): string {
+    if (process.env.YTDLP_COOKIES) {
+        try {
+            const decoded = Buffer.from(process.env.YTDLP_COOKIES, "base64").toString("utf8");
+            const cookieStr = parseCookiesTxt(decoded);
+            if (cookieStr) {
+                console.log(`[innertube] Loaded cookies from YTDLP_COOKIES env var`);
+                return cookieStr;
+            }
+        } catch (err) {
+            console.error("[innertube] Failed to parse YTDLP_COOKIES:", err);
+        }
+    }
+
+    const cookiesFile = resolve(process.cwd(), "cookies.txt");
+    if (existsSync(cookiesFile)) {
+        try {
+            const content = readFileSync(cookiesFile, "utf8");
+            const cookieStr = parseCookiesTxt(content);
+            if (cookieStr) {
+                console.log(`[innertube] Loaded cookies from cookies.txt`);
+                return cookieStr;
+            }
+        } catch (err) {
+            console.error("[innertube] Failed to read cookies.txt:", err);
+        }
+    }
+
+    console.warn("[innertube] No cookies found — datacenter IPs will likely be blocked by YouTube");
+    return "";
+}
 
 function extractVideoId(url: string): string | null {
     const patterns = [
@@ -28,75 +75,62 @@ function buildQualityLabel(height: number): string {
     return `${height}p`;
 }
 
-// ─── InnerTube singleton ──────────────────────────────────────────────────────
-
 let ytInstance: Innertube | null = null;
-async function getYT() {
-    if (!ytInstance) ytInstance = await Innertube.create({ retrieve_player: true });
+let ytCookieSnapshot = "";
+
+async function getYT(): Promise<Innertube> {
+    const cookieStr = getYouTubeCookieString();
+    if (!ytInstance || cookieStr !== ytCookieSnapshot) {
+        console.log("[innertube] Creating new Innertube instance" + (cookieStr ? " with cookies" : " WITHOUT cookies"));
+        ytInstance = await Innertube.create({
+            cookie: cookieStr || undefined,
+            retrieve_player: true,
+        });
+        ytCookieSnapshot = cookieStr;
+    }
     return ytInstance;
 }
 
-// ─── Client fallback strategy ─────────────────────────────────────────────────
-//
-// YouTube blocks certain InnerTube clients from data center IPs.
-// We try multiple clients in order until one succeeds:
-//   1. ANDROID      — best format quality (all resolutions, direct URLs)
-//   2. TV_EMBEDDED  — works from data center IPs (embedded player, no auth needed)
-//   3. IOS          — sometimes works when others don't
-//   4. WEB          — last resort
-//
-// Each client may return different format sets but all give us streaming URLs.
+type ClientName = "WEB" | "ANDROID" | "TV_EMBEDDED" | "IOS";
 
-type ClientName = "ANDROID" | "TV_EMBEDDED" | "IOS" | "WEB";
+function getClientPriority(hasCookies: boolean): ClientName[] {
+    if (hasCookies) return ["WEB", "ANDROID", "TV_EMBEDDED", "IOS"];
+    return ["TV_EMBEDDED", "ANDROID", "IOS", "WEB"];
+}
 
-const CLIENT_PRIORITY: ClientName[] = ["ANDROID", "TV_EMBEDDED", "IOS", "WEB"];
-
-async function getVideoInfo(yt: Innertube, videoId: string): Promise<{ info: any; client: ClientName }> {
+async function getVideoInfo(yt: Innertube, videoId: string, hasCookies: boolean): Promise<{ info: any; client: ClientName }> {
     const errors: string[] = [];
+    const clients = getClientPriority(hasCookies);
 
-    for (const client of CLIENT_PRIORITY) {
+    for (const client of clients) {
         try {
             console.log(`[innertube] Trying client: ${client}`);
             const info = await yt.getBasicInfo(videoId, { client });
-
             const status = info.playability_status?.status;
 
-            // If this client works, return immediately
             if (status === "OK" || !status) {
                 console.log(`[innertube] ✓ Client ${client} succeeded`);
                 return { info, client };
             }
-
-            // LOGIN_REQUIRED from data center IP — try next client
             if (status === "LOGIN_REQUIRED") {
-                console.log(`[innertube] ✗ Client ${client}: LOGIN_REQUIRED — trying next`);
+                console.log(`[innertube] ✗ ${client}: LOGIN_REQUIRED`);
                 errors.push(`${client}: login required`);
                 continue;
             }
-
-            // UNPLAYABLE / ERROR — video itself is unavailable, don't retry
             if (status === "UNPLAYABLE" || status === "ERROR") {
-                const reason = info.playability_status?.reason || "Video unavailable";
-                throw new Error(reason);
+                throw new Error(info.playability_status?.reason || "Video unavailable");
             }
-
-            // Unknown status — try next
             errors.push(`${client}: status=${status}`);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            // If it's a definitive video-level error, rethrow immediately
-            if (msg.includes("unavailable") || msg.includes("private") || msg.includes("removed")) {
-                throw err;
-            }
+            if (msg.includes("unavailable") || msg.includes("private") || msg.includes("removed")) throw err;
             errors.push(`${client}: ${msg}`);
-            console.log(`[innertube] ✗ Client ${client} error: ${msg}`);
+            console.log(`[innertube] ✗ ${client} error: ${msg}`);
         }
     }
 
     throw new Error(`All InnerTube clients failed: ${errors.join("; ")}`);
 }
-
-// ─── Format extraction ────────────────────────────────────────────────────────
 
 function extractFormats(info: any) {
     const streamingData = info.streaming_data;
@@ -105,7 +139,6 @@ function extractFormats(info: any) {
         ...(streamingData?.adaptive_formats ?? []),
     ];
 
-    // Video formats
     const videoFormats = allFormats
         .filter((f: any) => f.has_video && f.url)
         .map((f: any) => ({
@@ -125,7 +158,6 @@ function extractFormats(info: any) {
             return (b.has_audio ? 1 : 0) - (a.has_audio ? 1 : 0);
         });
 
-    // Deduplicate by quality label
     const seen = new Set<string>();
     const uniqueFormats = videoFormats.filter((f: any) => {
         if (seen.has(f.quality)) return false;
@@ -133,7 +165,6 @@ function extractFormats(info: any) {
         return true;
     });
 
-    // Best audio stream
     const audioFormats = allFormats
         .filter((f: any) => f.has_audio && !f.has_video && f.url)
         .sort((a: any, b: any) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
@@ -141,8 +172,6 @@ function extractFormats(info: any) {
 
     return { uniqueFormats, bestAudio };
 }
-
-// ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
     try {
@@ -152,17 +181,19 @@ export async function POST(request: NextRequest) {
         const videoId = extractVideoId(url);
         if (!videoId) return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
 
+        const cookieStr = getYouTubeCookieString();
+        const hasCookies = cookieStr.length > 0;
+
         const yt = await getYT();
-        const { info, client } = await getVideoInfo(yt, videoId);
+        const { info, client } = await getVideoInfo(yt, videoId, hasCookies);
 
         const details = info.basic_info;
         const { uniqueFormats, bestAudio } = extractFormats(info);
 
-        // Thumbnail
         const thumbnails = details.thumbnail ?? [];
         const thumbnail = [...thumbnails].sort((a: any, b: any) => (b.width ?? 0) - (a.width ?? 0))[0]?.url ?? "";
 
-        console.log(`[innertube] ${details.title} — ${uniqueFormats.length} formats via ${client}`);
+        console.log(`[innertube] "${details.title}" — ${uniqueFormats.length} formats via ${client} ${hasCookies ? "(authenticated)" : "(no cookies)"}`);
 
         return NextResponse.json({
             platform: "youtube",
@@ -181,10 +212,9 @@ export async function POST(request: NextRequest) {
             original_url: url,
         });
     } catch (err) {
-        // Reset instance on error so next request gets a fresh one
         ytInstance = null;
         const message = err instanceof Error ? err.message : "Failed to fetch video info";
-        console.error("youtubei.js error:", message);
+        console.error("[innertube] Error:", message);
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }
