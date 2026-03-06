@@ -30,9 +30,9 @@ export async function POST(request: NextRequest) {
                 if (innerTubeRes.ok && data.items?.length > 0) {
                     return NextResponse.json(data);
                 }
-                // If InnerTube fails (age-restricted etc), fall through to yt-dlp
+                // InnerTube failed — fall through to yt-dlp (which has cookies for auth)
                 if (data.error) {
-                    return NextResponse.json({ error: data.error }, { status: innerTubeRes.status });
+                    console.error("InnerTube error (falling back to yt-dlp):", data.error);
                 }
             } catch (err) {
                 console.error("InnerTube failed, trying yt-dlp:", err);

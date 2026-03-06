@@ -47,8 +47,8 @@ type DownloadStatus = "idle" | "downloading" | "merging" | "complete" | "error";
 
 const HIGH_QUALITY_LABELS = new Set(["4K", "1440p", "8K"]);
 
-// Platforms where ALL downloads must be direct browser fetch (IP-locked CDN URLs)
-const DIRECT_FETCH_PLATFORMS = new Set(["youtube", "twitter"]);
+// Platforms where ALL downloads must be direct browser fetch (IP-locked CDN URLs with CORS)
+const DIRECT_FETCH_PLATFORMS = new Set(["youtube"]);
 
 export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);

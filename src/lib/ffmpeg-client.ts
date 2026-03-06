@@ -6,14 +6,13 @@
  * │ Platform                    │ How to fetch                             │
  * ├─────────────────────────────┼──────────────────────────────────────────┤
  * │ YouTube (googlevideo.com)   │ Direct browser fetch — IP-locked URL     │
- * │ Twitter (video.twimg.com)   │ Direct browser fetch — IP-locked URL     │
+ * │ Twitter (video.twimg.com)   │ Server proxy — no CORS headers from CDN  │
  * │ Instagram (scontent/cdnig)  │ Server proxy — needs Referer header      │
  * │ Facebook (fbcdn)            │ Server proxy — needs Referer header      │
  * └─────────────────────────────┴──────────────────────────────────────────┘
  *
- * IP-locked means: the CDN signs the URL for the requesting IP.
- * If your server proxies it, CDN sees a different IP → 403 or error bytes.
- * Direct browser fetch works because browser IP = IP that got the URL.
+ * Only YouTube CDN sends Access-Control-Allow-Origin for direct browser fetch.
+ * All other platforms must go through /api/proxy which sets correct headers.
  */
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
@@ -39,9 +38,10 @@ export type FFmpegProgress = {
 function shouldFetchDirectly(url: string): boolean {
     try {
         const { hostname } = new URL(url);
+        // Only YouTube CDN supports CORS for direct browser fetch.
+        // Twitter CDN does NOT send Access-Control-Allow-Origin → browser blocks.
         return (
             hostname.endsWith("googlevideo.com") ||
-            hostname.endsWith("twimg.com") ||        // video.twimg.com, pbs.twimg.com
             hostname.endsWith("youtube.com") ||
             hostname.endsWith("youtu.be")
         );
