@@ -170,30 +170,45 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
   // ── Instagram ──
   if (platform === "instagram") {
     const isStory = /instagram\.com\/stories\//i.test(url);
-    let ytdlpError = "";
-    try {
-      const result = await analyzeWithYtDlp(url, platform);
-      if (result.items.length > 0) return result;
-      ytdlpError = "yt-dlp returned 0 items";
-    } catch (err) {
-      ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
-    }
+    let lastError = "";
+
+    // For regular posts (not stories), try instaloader FIRST.
+    // instaloader correctly handles mixed carousels (photos + videos),
+    // while yt-dlp only extracts video entries and ignores photos.
     if (!isStory) {
       try {
         const result = await analyzeWithInstaloader(url, platform);
-        if (result.items.length > 0) return result;
+        if (result.items.length > 0) {
+          console.log(`[analyze] instaloader returned ${result.items.length} items (${result.items.filter(i => i.type === "photo").length} photos, ${result.items.filter(i => i.type === "video").length} videos)`);
+          return result;
+        }
+        lastError = "instaloader returned 0 items";
       } catch (err) {
-        console.error("instaloader also failed:", err);
+        lastError = err instanceof Error ? err.message : "instaloader failed";
+        console.error("instaloader failed, falling back to yt-dlp:", lastError);
       }
     }
-    if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
-      throw new Error(
-        `${isStory ? "Instagram Stories require" : "This Instagram post requires"} authentication. ` +
-        "Please update your cookies.txt with fresh Instagram cookies."
-      );
+
+    // Fallback to yt-dlp (works for stories with cookies, and as fallback for posts)
+    try {
+      const result = await analyzeWithYtDlp(url, platform);
+      if (result.items.length > 0) return result;
+      lastError = "yt-dlp returned 0 items";
+    } catch (err) {
+      const ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
+      console.error("yt-dlp also failed:", ytdlpError);
+      if (!lastError) lastError = ytdlpError;
+      // Use yt-dlp error message for auth-related reporting
+      if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
+        throw new Error(
+          `${isStory ? "Instagram Stories require" : "This Instagram post requires"} authentication. ` +
+          "Please update your cookies.txt with fresh Instagram cookies."
+        );
+      }
     }
+
     throw new Error(
-      `Could not extract media from this Instagram post. It may be private. (${ytdlpError})`
+      `Could not extract media from this Instagram post. It may be private. (${lastError})`
     );
   }
 
@@ -568,12 +583,25 @@ function parseYtDlpEntry(
   data: Record<string, unknown>,
   index: number
 ): MediaItem | null {
+  const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp", "gif", "avif", "heic"]);
+
+  // Check if this entry is actually a photo (image) based on yt-dlp metadata
+  const entryExt = String(data.ext || "").toLowerCase();
+  const entryUrl = String(data.url || "");
+  const entryDuration = data.duration as number | null | undefined;
+  const isLikelyPhoto =
+    IMAGE_EXTS.has(entryExt) ||
+    (entryDuration === 0 || entryDuration === null || entryDuration === undefined) &&
+    (entryUrl.match(/\.(jpg|jpeg|png|webp|gif|avif)(\?|$)/i) !== null);
+
   const formats: MediaFormat[] = (
     (data.formats as Record<string, unknown>[]) || []
   )
     .filter((f) => {
       if (!f.vcodec || f.vcodec === "none") return false;
       if (!f.url) return false;
+      // If we already know this is a photo, skip video format parsing
+      if (isLikelyPhoto) return false;
       return true;
     })
     .map((f) => {
@@ -610,28 +638,31 @@ function parseYtDlpEntry(
 
   // Best audio-only stream
   let audioUrl: string | null = null;
-  const audioFormats = ((data.formats as Record<string, unknown>[]) || [])
-    .filter(
-      (f) =>
-        f.acodec &&
-        f.acodec !== "none" &&
-        (!f.vcodec || f.vcodec === "none")
-    )
-    .sort((a, b) => ((b.abr as number) || 0) - ((a.abr as number) || 0));
-  if (audioFormats.length > 0 && audioFormats[0].url) {
-    audioUrl = String(audioFormats[0].url);
+  if (!isLikelyPhoto) {
+    const audioFormats = ((data.formats as Record<string, unknown>[]) || [])
+      .filter(
+        (f) =>
+          f.acodec &&
+          f.acodec !== "none" &&
+          (!f.vcodec || f.vcodec === "none")
+      )
+      .sort((a, b) => ((b.abr as number) || 0) - ((a.abr as number) || 0));
+    if (audioFormats.length > 0 && audioFormats[0].url) {
+      audioUrl = String(audioFormats[0].url);
+    }
   }
 
+  const isPhoto = isLikelyPhoto || finalFormats.length === 0;
+
   return {
-    type: finalFormats.length > 0 ? "video" : "photo",
+    type: isPhoto ? "photo" : "video",
     title: String(data.title || data.description || "Untitled"),
     thumbnail: String(data.thumbnail || ""),
-    duration: (data.duration as number) || null,
-    formats: finalFormats,
-    direct_url:
-      finalFormats.length === 0
-        ? String(data.url || data.thumbnail || "")
-        : null,
+    duration: isPhoto ? null : ((data.duration as number) || null),
+    formats: isPhoto ? [] : finalFormats,
+    direct_url: isPhoto
+      ? String(data.url || data.thumbnail || "")
+      : null,
     audio_url: audioUrl,
     index,
   };
