@@ -162,6 +162,7 @@ export default function Home() {
     setError(null);
 
     const platform = mediaInfo.platform;
+    const mobile = isMobileDevice();
 
     try {
       const format =
@@ -170,13 +171,23 @@ export default function Home() {
           activeItem.formats[0]
           : null;
 
-      let blob: Blob;
+      let blob: Blob | null = null;
       let filename: string;
 
       if (activeItem.type === "photo") {
         // ── PHOTO ──
         const cdnUrl = activeItem.direct_url;
         if (!cdnUrl) throw new Error("No download URL available for this photo");
+
+        // On mobile, stream photos directly through proxy to avoid blob issues
+        if (mobile && canStreamThroughProxy(cdnUrl)) {
+          filename = `${platform}_photo_${activeItemIndex + 1}.jpg`;
+          streamDownloadFromProxy(cdnUrl, filename);
+          setDownloadStatus("complete");
+          setDownloadProgress(100);
+          return;
+        }
+
         if (cdnUrl.startsWith("data:")) {
           const res = await fetch(cdnUrl);
           blob = await res.blob();
@@ -228,8 +239,9 @@ export default function Home() {
         );
 
       } else if (format && format.url) {
-        // ── ALL PLATFORMS: fetch via proxy (CORS bypass, streams to browser) ──
+        // ── COMBINED (has_audio) FORMAT or simple video ──
         filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
+
         if (isM3u8Url(format.url)) {
           blob = await downloadM3u8Video(format.url, "output.mp4", (p: FFmpegProgress) => {
             setDownloadProgress(p.percent);
@@ -239,6 +251,14 @@ export default function Home() {
           const res = await fetch(format.url);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
           blob = await res.blob();
+        } else if (canStreamThroughProxy(format.url)) {
+          // Stream directly through proxy → file saves immediately
+          // Much faster: no blob buffering in browser memory
+          // Works better on mobile (no memory issues, proper save dialog)
+          streamDownloadFromProxy(format.url, filename);
+          setDownloadStatus("complete");
+          setDownloadProgress(100);
+          return;
         } else {
           const data = await fetchWithProgress(format.url, filename, (pct) => setDownloadProgress(pct));
           blob = new Blob([data as BlobPart], { type: "video/mp4" });
@@ -248,6 +268,15 @@ export default function Home() {
         // ── FALLBACK ──
         const ext = (activeItem as MediaItem).type === "photo" ? "jpg" : "mp4";
         filename = `${platform}_media_${activeItemIndex + 1}.${ext}`;
+
+        // On mobile, stream directly through proxy
+        if (mobile && canStreamThroughProxy(activeItem.direct_url)) {
+          streamDownloadFromProxy(activeItem.direct_url, filename);
+          setDownloadStatus("complete");
+          setDownloadProgress(100);
+          return;
+        }
+
         if (activeItem.direct_url.startsWith("/api/")) {
           const res = await fetch(activeItem.direct_url);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
@@ -260,7 +289,9 @@ export default function Home() {
         throw new Error("No download URL available for this item");
       }
 
-      triggerDownload(blob, filename);
+      if (blob) {
+        triggerDownload(blob, filename);
+      }
       setDownloadStatus("complete");
       setDownloadProgress(100);
     } catch (err) {
@@ -511,8 +542,47 @@ function triggerDownload(blob: Blob, filename: string) {
   const a = document.createElement("a");
   a.href = blobUrl;
   a.download = filename;
+  a.style.display = "none";
   document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(blobUrl);
+
+  // Use a timeout for the click — some mobile browsers need a tick
+  setTimeout(() => {
+    a.click();
+    // Delay cleanup significantly for mobile browsers
+    // iOS Safari and some Android browsers need time to start the download
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    }, 10000);
+  }, 100);
+}
+
+/** Stream download directly from proxy — avoids buffering entire file in browser memory */
+function streamDownloadFromProxy(cdnUrl: string, filename: string) {
+  const proxyUrl = `/api/proxy?url=${encodeURIComponent(cdnUrl)}&filename=${encodeURIComponent(filename)}`;
+  const a = document.createElement("a");
+  a.href = proxyUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  setTimeout(() => {
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+    }, 5000);
+  }, 100);
+}
+
+/** Check if URL is a CDN URL that can be streamed through proxy */
+function canStreamThroughProxy(url: string): boolean {
+  if (!url || url.startsWith("data:") || url.startsWith("/api/") || url.startsWith("blob:")) {
+    return false;
+  }
+  return url.startsWith("http");
+}
+
+/** Detect if the user is on a mobile device */
+function isMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 }

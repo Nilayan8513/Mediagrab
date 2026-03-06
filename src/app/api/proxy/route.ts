@@ -72,12 +72,18 @@ export async function GET(request: NextRequest) {
             headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         }
 
+        // Forward Range header for resumable downloads (important for mobile)
+        const rangeHeader = request.headers.get("Range");
+        if (rangeHeader) {
+            headers["Range"] = rangeHeader;
+        }
+
         const response = await fetch(targetUrl, {
             headers,
             redirect: "follow",
         });
 
-        if (!response.ok) {
+        if (!response.ok && response.status !== 206) {
             return new Response(`CDN returned ${response.status}`, {
                 status: response.status,
             });
@@ -86,10 +92,13 @@ export async function GET(request: NextRequest) {
         const contentType =
             response.headers.get("content-type") || "application/octet-stream";
         const contentLength = response.headers.get("content-length");
+        const contentRange = response.headers.get("content-range");
 
         const responseHeaders: Record<string, string> = {
             "Content-Type": contentType,
             "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition",
+            "Accept-Ranges": "bytes",
             "Cache-Control": "no-cache",
         };
 
@@ -97,11 +106,20 @@ export async function GET(request: NextRequest) {
             responseHeaders["Content-Length"] = contentLength;
         }
 
-        const filename = request.nextUrl.searchParams.get("filename") || "download";
-        responseHeaders["Content-Disposition"] =
-            `attachment; filename="${encodeURIComponent(filename)}"`;
+        if (contentRange) {
+            responseHeaders["Content-Range"] = contentRange;
+        }
 
-        return new Response(response.body, { headers: responseHeaders });
+        const filename = request.nextUrl.searchParams.get("filename") || "download";
+        // Use RFC 6266 format for cross-browser compatibility (especially mobile)
+        const safeFilename = filename.replace(/[^\w.\-]/g, "_");
+        responseHeaders["Content-Disposition"] =
+            `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+
+        return new Response(response.body, {
+            status: response.status,
+            headers: responseHeaders,
+        });
     } catch (error) {
         const message =
             error instanceof Error ? error.message : "Proxy fetch failed";
