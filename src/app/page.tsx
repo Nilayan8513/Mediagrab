@@ -522,6 +522,8 @@ export default function Home() {
               itemType={activeItem.type}
               isCarousel={isCarousel}
               isVideo={activeItem.type === "video"}
+              photoCount={mediaInfo.items.filter(i => i.type === "photo").length}
+              videoCount={mediaInfo.items.filter(i => i.type === "video").length}
             />
           )}
         </div>

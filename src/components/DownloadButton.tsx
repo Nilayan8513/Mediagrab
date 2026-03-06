@@ -16,6 +16,8 @@ interface DownloadButtonProps {
     itemType?: "video" | "photo";
     isCarousel?: boolean;
     isVideo?: boolean;
+    photoCount?: number;
+    videoCount?: number;
 }
 
 function ActionButton({
@@ -130,6 +132,8 @@ export default function DownloadButton({
     itemType = "video",
     isCarousel = false,
     isVideo = false,
+    photoCount = 0,
+    videoCount = 0,
 }: DownloadButtonProps) {
     const isVideoActive = status === "downloading" || status === "merging";
     const isAudioActive = audioStatus === "downloading" || audioStatus === "merging";
@@ -172,17 +176,23 @@ export default function DownloadButton({
             )}
 
             {/* Download All for carousels */}
-            {isCarousel && onDownloadAll && !anyActive && (
-                <button
-                    onClick={onDownloadAll}
-                    disabled={!!disabled || anyActive}
-                    className="btn-primary w-full flex items-center justify-center gap-2"
-                    style={{ background: "rgba(34, 197, 94, 0.85)" }}
-                >
-                    {DownloadIcon}
-                    Download All (ZIP)
-                </button>
-            )}
+            {isCarousel && onDownloadAll && !anyActive && (() => {
+                const parts: string[] = [];
+                if (photoCount > 0) parts.push(`${photoCount} Photo${photoCount > 1 ? "s" : ""}`);
+                if (videoCount > 0) parts.push(`${videoCount} Video${videoCount > 1 ? "s" : ""}`);
+                const summary = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
+                return (
+                    <button
+                        onClick={onDownloadAll}
+                        disabled={!!disabled || anyActive}
+                        className="btn-primary w-full flex items-center justify-center gap-2"
+                        style={{ background: "rgba(34, 197, 94, 0.85)" }}
+                    >
+                        {DownloadIcon}
+                        Download All{summary} (ZIP)
+                    </button>
+                );
+            })()}
         </div>
     );
 }

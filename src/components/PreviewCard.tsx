@@ -120,17 +120,24 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
                 <div className="flex flex-col gap-1.5 min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                         <PlatformBadge platform={platform} />
-                        {isCarousel && (
-                            <span
-                                className="badge"
-                                style={{
-                                    background: "rgba(34, 197, 94, 0.1)",
-                                    color: "#22c55e",
-                                }}
-                            >
-                                📂 {items.length} items
-                            </span>
-                        )}
+                        {isCarousel && (() => {
+                            const photoCount = items.filter(i => i.type === "photo").length;
+                            const videoCount = items.filter(i => i.type === "video").length;
+                            const parts: string[] = [];
+                            if (photoCount > 0) parts.push(`${photoCount} Photo${photoCount > 1 ? "s" : ""}`);
+                            if (videoCount > 0) parts.push(`${videoCount} Video${videoCount > 1 ? "s" : ""}`);
+                            return (
+                                <span
+                                    className="badge"
+                                    style={{
+                                        background: "rgba(34, 197, 94, 0.1)",
+                                        color: "#22c55e",
+                                    }}
+                                >
+                                    📂 {parts.join(", ")}
+                                </span>
+                            );
+                        })()}
                     </div>
                     <h3 className="text-sm font-semibold leading-snug line-clamp-2" style={{ color: "var(--text-primary)" }}>
                         {title}
@@ -169,6 +176,17 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
                                     {item.type === "photo" ? "📷" : "🎬"}
                                 </div>
                             )}
+                            {/* Type indicator on each thumbnail */}
+                            <div
+                                className="absolute bottom-0 right-0 px-1 py-px rounded-tl text-[8px] font-bold uppercase text-white leading-none"
+                                style={{
+                                    background: item.type === "photo" ? "#a855f7" : "var(--accent)",
+                                    fontSize: "7px",
+                                    letterSpacing: "0.03em",
+                                }}
+                            >
+                                {item.type === "photo" ? "📷" : "🎬"}
+                            </div>
                         </button>
                     ))}
                 </div>
