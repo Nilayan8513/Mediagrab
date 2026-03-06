@@ -13,8 +13,32 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Quick platform check
         const platform = detectPlatform(url);
+
+        // ── YouTube: Use InnerTube API directly (no yt-dlp, no cookies needed) ──
+        if (platform === "youtube") {
+            try {
+                const innerTubeRes = await fetch(
+                    new URL("/api/youtube-innertube", request.url).toString(),
+                    {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ url }),
+                    }
+                );
+                const data = await innerTubeRes.json();
+                if (innerTubeRes.ok && data.items?.length > 0) {
+                    return NextResponse.json(data);
+                }
+                // If InnerTube fails (age-restricted etc), fall through to yt-dlp
+                if (data.error) {
+                    return NextResponse.json({ error: data.error }, { status: innerTubeRes.status });
+                }
+            } catch (err) {
+                console.error("InnerTube failed, trying yt-dlp:", err);
+            }
+        }
+
         if (platform === "unknown") {
             return NextResponse.json(
                 { error: "Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook." },

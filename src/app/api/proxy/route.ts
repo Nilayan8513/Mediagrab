@@ -7,28 +7,35 @@ import { NextRequest } from "next/server";
  */
 
 const ALLOWED_DOMAINS = [
-    "googlevideo.com",      // YouTube CDN
+    "googlevideo.com",
     "youtube.com",
     "ytimg.com",
     "ggpht.com",
-    "cdninstagram.com",     // Instagram CDN
+    "cdninstagram.com",
     "scontent.cdninstagram.com",
-    "scontent",             // Instagram/Facebook scontent CDNs
-    "fbcdn.net",            // Facebook CDN
-    "pbs.twimg.com",        // Twitter CDN
+    "scontent",
+    "fbcdn.net",
+    "pbs.twimg.com",
     "video.twimg.com",
     "ton.twitter.com",
     "facebook.com",
     "fbcdn",
+    "rr1---sn",   // YouTube CDN edge nodes (rr1---sn-xxx.googlevideo.com)
+    "rr2---sn",
+    "rr3---sn",
+    "rr4---sn",
+    "rr5---sn",
 ];
 
 function isAllowedUrl(url: string): boolean {
     try {
         const parsed = new URL(url);
+        const host = parsed.hostname;
         return ALLOWED_DOMAINS.some(
             (domain) =>
-                parsed.hostname.includes(domain) ||
-                parsed.hostname.endsWith(`.${domain}`)
+                host === domain ||
+                host.endsWith(`.${domain}`) ||
+                host.includes(domain)
         );
     } catch {
         return false;
@@ -48,18 +55,21 @@ export async function GET(request: NextRequest) {
     try {
         const headers: Record<string, string> = {
             "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
         };
 
-        // Set appropriate Referer based on CDN
         if (targetUrl.includes("googlevideo.com") || targetUrl.includes("youtube.com")) {
             headers["Referer"] = "https://www.youtube.com/";
+            headers["Origin"] = "https://www.youtube.com";
         } else if (targetUrl.includes("twimg.com") || targetUrl.includes("twitter.com")) {
             headers["Referer"] = "https://x.com/";
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         } else if (targetUrl.includes("cdninstagram") || targetUrl.includes("scontent")) {
             headers["Referer"] = "https://www.instagram.com/";
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         } else if (targetUrl.includes("fbcdn") || targetUrl.includes("facebook.com")) {
             headers["Referer"] = "https://www.facebook.com/";
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         }
 
         const response = await fetch(targetUrl, {
@@ -87,12 +97,10 @@ export async function GET(request: NextRequest) {
             responseHeaders["Content-Length"] = contentLength;
         }
 
-        // Get filename from query or derive from content-type
         const filename = request.nextUrl.searchParams.get("filename") || "download";
         responseHeaders["Content-Disposition"] =
             `attachment; filename="${encodeURIComponent(filename)}"`;
 
-        // Stream directly — no disk buffering
         return new Response(response.body, { headers: responseHeaders });
     } catch (error) {
         const message =
