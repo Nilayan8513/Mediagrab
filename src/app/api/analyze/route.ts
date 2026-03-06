@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
 
         const platform = detectPlatform(url);
 
-        // ── YouTube: Use InnerTube API directly (no yt-dlp, no cookies needed) ──
+        // ── YouTube: Use InnerTube API directly (combined formats ≤720p, no merging needed) ──
         if (platform === "youtube") {
             try {
                 const innerTubeRes = await fetch(
@@ -30,12 +30,34 @@ export async function POST(request: NextRequest) {
                 if (innerTubeRes.ok && data.items?.length > 0) {
                     return NextResponse.json(data);
                 }
-                // InnerTube failed — fall through to yt-dlp (which has cookies for auth)
-                if (data.error) {
-                    console.error("InnerTube error (falling back to yt-dlp):", data.error);
-                }
+                console.error("InnerTube error (falling back to yt-dlp):", data.error);
             } catch (err) {
                 console.error("InnerTube failed, trying yt-dlp:", err);
+            }
+
+            // yt-dlp fallback: also cap at 720p combined only
+            try {
+                const mediaInfo = await analyzeUrl(url);
+                // Filter YouTube formats to combined ≤720p only (same policy as InnerTube)
+                for (const item of mediaInfo.items) {
+                    if (item.type === "video") {
+                        item.formats = item.formats.filter(
+                            (f) => f.has_audio && (f.height ?? 0) <= 720
+                        );
+                        // If nothing left, keep best combined regardless of height
+                        if (item.formats.length === 0) {
+                            // Re-run without height filter but still require audio
+                            const allFormats = (mediaInfo as any)._allFormats ?? item.formats;
+                            item.formats = allFormats.filter((f: any) => f.has_audio).slice(0, 3);
+                        }
+                        // Clear audio_url — not needed since all formats are combined
+                        item.audio_url = null;
+                    }
+                }
+                if (mediaInfo.items.length > 0) return NextResponse.json(mediaInfo);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : "yt-dlp failed";
+                return NextResponse.json({ error: msg }, { status: 500 });
             }
         }
 

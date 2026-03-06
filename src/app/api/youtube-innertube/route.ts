@@ -24,30 +24,21 @@ function getYouTubeCookieString(): string {
         try {
             const decoded = Buffer.from(process.env.YTDLP_COOKIES, "base64").toString("utf8");
             const cookieStr = parseCookiesTxt(decoded);
-            if (cookieStr) {
-                console.log(`[innertube] Loaded cookies from YTDLP_COOKIES env var`);
-                return cookieStr;
-            }
+            if (cookieStr) return cookieStr;
         } catch (err) {
             console.error("[innertube] Failed to parse YTDLP_COOKIES:", err);
         }
     }
-
     const cookiesFile = resolve(process.cwd(), "cookies.txt");
     if (existsSync(cookiesFile)) {
         try {
             const content = readFileSync(cookiesFile, "utf8");
             const cookieStr = parseCookiesTxt(content);
-            if (cookieStr) {
-                console.log(`[innertube] Loaded cookies from cookies.txt`);
-                return cookieStr;
-            }
+            if (cookieStr) return cookieStr;
         } catch (err) {
             console.error("[innertube] Failed to read cookies.txt:", err);
         }
     }
-
-    console.warn("[innertube] No cookies found — datacenter IPs will likely be blocked by YouTube");
     return "";
 }
 
@@ -63,6 +54,48 @@ function extractVideoId(url: string): string | null {
     return null;
 }
 
+let ytInstance: Innertube | null = null;
+let ytCookieSnapshot = "";
+
+async function getYT(): Promise<Innertube> {
+    const cookieStr = getYouTubeCookieString();
+    if (!ytInstance || cookieStr !== ytCookieSnapshot) {
+        ytInstance = await Innertube.create({
+            cookie: cookieStr || undefined,
+            retrieve_player: true,
+        });
+        ytCookieSnapshot = cookieStr;
+    }
+    return ytInstance;
+}
+
+type ClientName = "WEB" | "ANDROID" | "TV_EMBEDDED" | "IOS";
+
+async function getVideoInfo(yt: Innertube, videoId: string, hasCookies: boolean): Promise<{ info: any; client: ClientName }> {
+    const errors: string[] = [];
+    const clients: ClientName[] = hasCookies
+        ? ["WEB", "ANDROID", "TV_EMBEDDED", "IOS"]
+        : ["TV_EMBEDDED", "ANDROID", "IOS", "WEB"];
+
+    for (const client of clients) {
+        try {
+            const info = await yt.getBasicInfo(videoId, { client });
+            const status = info.playability_status?.status;
+            if (status === "OK" || !status) return { info, client };
+            if (status === "LOGIN_REQUIRED") { errors.push(`${client}: login required`); continue; }
+            if (status === "UNPLAYABLE" || status === "ERROR") {
+                throw new Error(info.playability_status?.reason || "Video unavailable");
+            }
+            errors.push(`${client}: status=${status}`);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes("unavailable") || msg.includes("private") || msg.includes("removed")) throw err;
+            errors.push(`${client}: ${msg}`);
+        }
+    }
+    throw new Error(`All InnerTube clients failed: ${errors.join("; ")}`);
+}
+
 function buildQualityLabel(height: number): string {
     if (height >= 4320) return "8K";
     if (height >= 2160) return "4K";
@@ -75,63 +108,6 @@ function buildQualityLabel(height: number): string {
     return `${height}p`;
 }
 
-let ytInstance: Innertube | null = null;
-let ytCookieSnapshot = "";
-
-async function getYT(): Promise<Innertube> {
-    const cookieStr = getYouTubeCookieString();
-    if (!ytInstance || cookieStr !== ytCookieSnapshot) {
-        console.log("[innertube] Creating new Innertube instance" + (cookieStr ? " with cookies" : " WITHOUT cookies"));
-        ytInstance = await Innertube.create({
-            cookie: cookieStr || undefined,
-            retrieve_player: true,
-        });
-        ytCookieSnapshot = cookieStr;
-    }
-    return ytInstance;
-}
-
-type ClientName = "WEB" | "ANDROID" | "TV_EMBEDDED" | "IOS";
-
-function getClientPriority(hasCookies: boolean): ClientName[] {
-    if (hasCookies) return ["WEB", "ANDROID", "TV_EMBEDDED", "IOS"];
-    return ["TV_EMBEDDED", "ANDROID", "IOS", "WEB"];
-}
-
-async function getVideoInfo(yt: Innertube, videoId: string, hasCookies: boolean): Promise<{ info: any; client: ClientName }> {
-    const errors: string[] = [];
-    const clients = getClientPriority(hasCookies);
-
-    for (const client of clients) {
-        try {
-            console.log(`[innertube] Trying client: ${client}`);
-            const info = await yt.getBasicInfo(videoId, { client });
-            const status = info.playability_status?.status;
-
-            if (status === "OK" || !status) {
-                console.log(`[innertube] ✓ Client ${client} succeeded`);
-                return { info, client };
-            }
-            if (status === "LOGIN_REQUIRED") {
-                console.log(`[innertube] ✗ ${client}: LOGIN_REQUIRED`);
-                errors.push(`${client}: login required`);
-                continue;
-            }
-            if (status === "UNPLAYABLE" || status === "ERROR") {
-                throw new Error(info.playability_status?.reason || "Video unavailable");
-            }
-            errors.push(`${client}: status=${status}`);
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("unavailable") || msg.includes("private") || msg.includes("removed")) throw err;
-            errors.push(`${client}: ${msg}`);
-            console.log(`[innertube] ✗ ${client} error: ${msg}`);
-        }
-    }
-
-    throw new Error(`All InnerTube clients failed: ${errors.join("; ")}`);
-}
-
 function extractFormats(info: any) {
     const streamingData = info.streaming_data;
     const allFormats = [
@@ -139,36 +115,48 @@ function extractFormats(info: any) {
         ...(streamingData?.adaptive_formats ?? []),
     ];
 
-    const videoFormats = allFormats
-        .filter((f: any) => f.has_video && f.url)
+    /**
+     * STRATEGY: Only expose combined (audio+video) formats up to 720p.
+     *
+     * Why 720p cap?
+     * - YouTube's combined formats (itag 22 = 720p, itag 18 = 360p) have BOTH
+     *   video and audio in a single stream → no merging needed → instant download.
+     * - 1080p+ on YouTube are always split (video-only + audio-only) and require
+     *   FFmpeg merging. On free Railway (512MB RAM, shared CPU) and on mobile
+     *   (browser WASM), this is too slow and unreliable.
+     * - 720p is perfectly watchable on phones and most screens.
+     *
+     * We pick only formats where has_video=true AND has_audio=true AND height<=720.
+     */
+    const combinedFormats = allFormats
+        .filter((f: any) => f.has_video && f.has_audio && f.url && (f.height ?? 0) <= 720 && (f.height ?? 0) > 0)
         .map((f: any) => ({
             format_id: String(f.itag),
             quality: buildQualityLabel(f.height ?? 0),
             ext: f.mime_type?.includes("mp4") ? "mp4" : "webm",
             filesize: f.content_length ? parseInt(f.content_length) : null,
             url: f.url,
-            has_audio: f.has_audio ?? false,
+            has_audio: true,
             height: f.height ?? 0,
             fps: f.fps ?? null,
         }))
-        .filter((f: any) => f.height > 0)
-        .sort((a: any, b: any) => {
-            const hd = b.height - a.height;
-            if (hd !== 0) return hd;
-            return (b.has_audio ? 1 : 0) - (a.has_audio ? 1 : 0);
-        });
+        .sort((a: any, b: any) => b.height - a.height);
 
+    // Deduplicate by quality label — keep highest bitrate per quality
     const seen = new Set<string>();
-    const uniqueFormats = videoFormats.filter((f: any) => {
+    const uniqueFormats = combinedFormats.filter((f: any) => {
         if (seen.has(f.quality)) return false;
         seen.add(f.quality);
         return true;
     });
 
+    // Best audio-only stream (still needed for audio-only downloads)
     const audioFormats = allFormats
         .filter((f: any) => f.has_audio && !f.has_video && f.url)
         .sort((a: any, b: any) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
     const bestAudio = (audioFormats[0] as any)?.url ?? null;
+
+    console.log(`[innertube] Combined formats <=720p: ${uniqueFormats.map((f: any) => f.quality).join(", ")}`);
 
     return { uniqueFormats, bestAudio };
 }
@@ -190,10 +178,19 @@ export async function POST(request: NextRequest) {
         const details = info.basic_info;
         const { uniqueFormats, bestAudio } = extractFormats(info);
 
+        if (uniqueFormats.length === 0) {
+            // Fallback: reset instance and throw so analyze/route.ts falls back to yt-dlp
+            ytInstance = null;
+            return NextResponse.json(
+                { error: "No combined formats found — falling back to yt-dlp" },
+                { status: 404 }
+            );
+        }
+
         const thumbnails = details.thumbnail ?? [];
         const thumbnail = [...thumbnails].sort((a: any, b: any) => (b.width ?? 0) - (a.width ?? 0))[0]?.url ?? "";
 
-        console.log(`[innertube] "${details.title}" — ${uniqueFormats.length} formats via ${client} ${hasCookies ? "(authenticated)" : "(no cookies)"}`);
+        console.log(`[innertube] "${details.title}" — ${uniqueFormats.length} formats via ${client}`);
 
         return NextResponse.json({
             platform: "youtube",
