@@ -254,14 +254,19 @@ async function analyzeTwitter(url: string): Promise<MediaInfo> {
 function parseTwitterData(data: Record<string, unknown>, url: string): MediaInfo {
   const allFormats = (data.formats as Record<string, unknown>[]) || [];
 
+  // Helper: reject m3u8/HLS URLs — their segments have auth tokens that expire
+  const isDirectUrl = (u: unknown) => {
+    const s = String(u || "");
+    return s.startsWith("http") && !s.includes(".m3u8") && !s.includes("m3u8");
+  };
+
   // Separate video-only and audio-only streams
   const videoFormats = allFormats
     .filter((f) => {
-      const acodec = String(f.acodec || "");
       const vcodec = String(f.vcodec || "");
       const hasVideo = vcodec && vcodec !== "none";
-      // Keep formats that have video (audio presence doesn't matter here)
-      return hasVideo && f.url;
+      // Keep formats that have video AND a direct (non-m3u8) URL
+      return hasVideo && f.url && isDirectUrl(f.url);
     })
     .map((f) => {
       const hasAudio = !!(f.acodec && String(f.acodec) !== "none");
@@ -290,12 +295,12 @@ function parseTwitterData(data: Record<string, unknown>, url: string): MediaInfo
     return true;
   });
 
-  // Best audio-only stream
+  // Best audio-only stream (direct URLs only)
   const audioOnlyFormats = allFormats
     .filter((f) => {
       const acodec = String(f.acodec || "");
       const vcodec = String(f.vcodec || "none");
-      return acodec !== "none" && acodec !== "" && (vcodec === "none" || !vcodec) && f.url;
+      return acodec !== "none" && acodec !== "" && (vcodec === "none" || !vcodec) && f.url && isDirectUrl(f.url);
     })
     .sort((a, b) => ((b.abr as number) || 0) - ((a.abr as number) || 0));
 
@@ -308,7 +313,7 @@ function parseTwitterData(data: Record<string, unknown>, url: string): MediaInfo
       .filter((f) => {
         const acodec = String(f.acodec || "");
         const vcodec = String(f.vcodec || "");
-        return acodec !== "none" && acodec !== "" && vcodec !== "none" && f.url;
+        return acodec !== "none" && acodec !== "" && vcodec !== "none" && f.url && isDirectUrl(f.url);
       })
       .sort((a, b) => ((b.height as number) || 0) - ((a.height as number) || 0));
     if (combined.length > 0) audioUrl = String(combined[0].url);
