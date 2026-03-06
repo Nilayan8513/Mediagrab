@@ -11,19 +11,19 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "MediaGrab — Social Media Downloader",
   description:
-    "Download videos, reels, shorts, and photos from YouTube, Instagram, Twitter/X, and Facebook in the highest quality. Free and fast.",
+    "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook in the highest quality. Free and fast.",
   keywords: [
     "social media downloader",
-    "youtube downloader",
     "instagram downloader",
     "twitter downloader",
+    "facebook downloader",
     "video downloader",
     "reel downloader",
   ],
   openGraph: {
     title: "MediaGrab — Social Media Downloader",
     description:
-      "Download videos, reels, shorts, and photos from YouTube, Instagram, Twitter/X, and Facebook.",
+      "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.",
     type: "website",
   },
 };

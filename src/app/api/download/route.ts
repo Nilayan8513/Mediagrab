@@ -10,7 +10,7 @@ import { createWriteStream } from "fs";
 /**
  * Server-side download — used for:
  *   1. Audio extraction (needs ffmpeg)
- *   2. Video-only formats that need audio merging (YouTube 1080p+ etc.)
+ *   2. Video-only formats that need audio merging
  *   3. Instagram downloads (instaloader)
  *   4. Gallery-dl downloads
  * 

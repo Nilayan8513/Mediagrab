@@ -20,10 +20,6 @@ export async function OPTIONS() {
  */
 
 const ALLOWED_DOMAINS = [
-    "googlevideo.com",
-    "youtube.com",
-    "ytimg.com",
-    "ggpht.com",
     "cdninstagram.com",
     "scontent.cdninstagram.com",
     "scontent",
@@ -33,11 +29,6 @@ const ALLOWED_DOMAINS = [
     "ton.twitter.com",
     "facebook.com",
     "fbcdn",
-    "rr1---sn",   // YouTube CDN edge nodes (rr1---sn-xxx.googlevideo.com)
-    "rr2---sn",
-    "rr3---sn",
-    "rr4---sn",
-    "rr5---sn",
 ];
 
 function isAllowedUrl(url: string): boolean {
@@ -73,23 +64,17 @@ export async function GET(request: NextRequest) {
     try {
         const headers: Record<string, string> = {
             "User-Agent":
-                "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             // Accept compressed responses from CDN — reduces transfer size
             "Accept-Encoding": "identity",
         };
 
-        if (targetUrl.includes("googlevideo.com") || targetUrl.includes("youtube.com")) {
-            headers["Referer"] = "https://www.youtube.com/";
-            headers["Origin"] = "https://www.youtube.com";
-        } else if (targetUrl.includes("twimg.com") || targetUrl.includes("twitter.com")) {
+        if (targetUrl.includes("twimg.com") || targetUrl.includes("twitter.com")) {
             headers["Referer"] = "https://x.com/";
-            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         } else if (targetUrl.includes("cdninstagram") || targetUrl.includes("scontent")) {
             headers["Referer"] = "https://www.instagram.com/";
-            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         } else if (targetUrl.includes("fbcdn") || targetUrl.includes("facebook.com")) {
             headers["Referer"] = "https://www.facebook.com/";
-            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         }
 
         // Forward Range header for resumable/parallel chunk downloads

@@ -5,7 +5,6 @@ interface PlatformBadgeProps {
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
-    youtube: "YouTube",
     instagram: "Instagram",
     twitter: "Twitter / X",
     facebook: "Facebook",

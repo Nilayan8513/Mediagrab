@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, type ReactNode } from "react";
-import { YouTubeLogo, InstagramLogo, XLogo, FacebookLogo } from "./PlatformLogos";
+import { InstagramLogo, XLogo, FacebookLogo } from "./PlatformLogos";
 
 interface UrlInputProps {
     onAnalyze: (url: string) => void;
@@ -10,14 +10,12 @@ interface UrlInputProps {
 }
 
 const PLATFORM_ICONS: Record<string, { icon: ReactNode; color: string }> = {
-    youtube: { icon: <YouTubeLogo size={18} />, color: "#dc2626" },
     instagram: { icon: <InstagramLogo size={18} />, color: "#e1306c" },
     twitter: { icon: <XLogo size={18} />, color: "#000000" },
     facebook: { icon: <FacebookLogo size={18} />, color: "#1877f2" },
 };
 
 function quickDetectPlatform(url: string): string | null {
-    if (/youtube\.com|youtu\.be/i.test(url)) return "youtube";
     if (/instagram\.com/i.test(url)) return "instagram";
     if (/twitter\.com|x\.com/i.test(url)) return "twitter";
     if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";

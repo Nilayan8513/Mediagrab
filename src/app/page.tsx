@@ -130,8 +130,7 @@ export default function Home() {
   const isCarousel = (mediaInfo?.items.length || 0) > 1;
   const selectedFormatObj = activeItem?.formats.find(f => f.format_id === selectedFormat);
 
-  // YouTube is now always combined (has_audio=true), so this only fires for
-  // non-YouTube video-only streams (rare — Twitter/Facebook sometimes do this)
+  // This only fires for video-only streams (Twitter/Facebook sometimes do this)
   const needsBrowserMerge =
     !!selectedFormatObj && !selectedFormatObj.has_audio && !!activeItem?.audio_url;
 
@@ -220,8 +219,7 @@ export default function Home() {
         }
 
         // ── VIDEO: combined format (has_audio=true) — direct proxy fetch ────────
-        // YouTube 720p and below always lands here (no WASM, no server merge)
-        // Twitter/Facebook/Instagram combined formats also land here
+        // Twitter/Facebook/Instagram combined formats land here
       } else if (format?.url && format.has_audio) {
         filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
 
@@ -244,7 +242,7 @@ export default function Home() {
           blob = new Blob([data as BlobPart], { type: "video/mp4" });
         }
 
-        // ── VIDEO: video-only needing browser merge (non-YouTube edge cases) ────
+        // ── VIDEO: video-only needing browser merge (edge cases) ────
       } else if (format?.url && !format.has_audio && activeItem.audio_url) {
         filename = `${platform}_${format.quality}.mp4`;
         const { mergeVideoAudio } = await import("@/lib/ffmpeg-client");
@@ -409,7 +407,6 @@ export default function Home() {
   const mobile = isMobile();
 
   const platforms = [
-    { name: "YouTube", key: "youtube" },
     { name: "Instagram", key: "instagram" },
     { name: "Twitter / X", key: "twitter" },
     { name: "Facebook", key: "facebook" },
