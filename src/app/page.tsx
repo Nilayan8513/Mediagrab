@@ -51,6 +51,52 @@ const HIGH_QUALITY_LABELS = new Set(["4K", "1440p", "8K"]);
 // Platforms where ALL downloads must be direct browser fetch (IP-locked CDN URLs with CORS)
 const DIRECT_FETCH_PLATFORMS = new Set(["youtube"]);
 
+/** Detect image format from magic bytes in a Uint8Array */
+function getImageExtFromBytes(bytes: Uint8Array): string {
+  if (bytes.length < 12) return "jpg";
+  // RIFF....WEBP
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "webp";
+  // PNG: 0x89 P N G
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return "png";
+  // GIF: GIF8
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "gif";
+  // AVIF/HEIC: ftyp box
+  if (bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+    if (brand.startsWith("avif") || brand.startsWith("avis")) return "avif";
+    if (brand.startsWith("heic") || brand.startsWith("heix") || brand.startsWith("mif1")) return "heic";
+  }
+  // JPEG: FF D8 FF
+  return "jpg";
+}
+
+/** Detect the correct image extension from a Blob by reading its first bytes */
+async function getImageExtFromBlob(blob: Blob): Promise<string> {
+  // First try blob.type if available
+  const mime = blob.type.toLowerCase();
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("png")) return "png";
+  if (mime.includes("gif")) return "gif";
+  if (mime.includes("avif")) return "avif";
+  if (mime.includes("heic")) return "heic";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  // If no MIME type, sniff the bytes
+  const header = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+  return getImageExtFromBytes(header);
+}
+
+/** Detect the correct image extension from a data: URL */
+function getImageExtFromDataUrl(dataUrl: string): string {
+  const mimeMatch = dataUrl.match(/^data:image\/(\w+);/);
+  if (mimeMatch) {
+    const sub = mimeMatch[1].toLowerCase();
+    if (sub === "jpeg") return "jpg";
+    return sub;
+  }
+  return "jpg";
+}
+
 export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
@@ -139,18 +185,24 @@ export default function Home() {
         // ── PHOTO ──
         const cdnUrl = activeItem.direct_url;
         if (!cdnUrl) throw new Error("No download URL available for this photo");
-        filename = `${platform}_photo_${activeItemIndex + 1}.jpg`;
         if (cdnUrl.startsWith("data:")) {
           const res = await fetch(cdnUrl);
           blob = await res.blob();
+          const ext = getImageExtFromDataUrl(cdnUrl);
+          filename = `${platform}_photo_${activeItemIndex + 1}.${ext}`;
           setDownloadProgress(100);
         } else if (cdnUrl.startsWith("/api/")) {
           const res = await fetch(cdnUrl);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
           blob = await res.blob();
+          const ext = await getImageExtFromBlob(blob);
+          filename = `${platform}_photo_${activeItemIndex + 1}.${ext}`;
         } else {
-          const data = await fetchWithProgress(cdnUrl, filename, (pct) => setDownloadProgress(pct));
-          blob = new Blob([data as BlobPart], { type: "image/jpeg" });
+          const tempName = `${platform}_photo_${activeItemIndex + 1}`;
+          const data = await fetchWithProgress(cdnUrl, tempName, (pct) => setDownloadProgress(pct));
+          const ext = getImageExtFromBytes(data);
+          blob = new Blob([data as BlobPart], { type: `image/${ext === "jpg" ? "jpeg" : ext}` });
+          filename = `${platform}_photo_${activeItemIndex + 1}.${ext}`;
         }
 
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
@@ -307,29 +359,49 @@ export default function Home() {
 
         if (item.direct_url?.startsWith("data:") || item.direct_url?.startsWith("http") || item.direct_url?.startsWith("/api/")) {
           cdnUrl = item.direct_url;
-          const ext = item.type === "photo" ? "jpg" : "mp4";
-          filename = `${mediaInfo.platform}_${item.type}_${i + 1}.${ext}`;
         } else if (item.formats.length > 0 && item.formats[0].url) {
           cdnUrl = item.formats[0].url;
-          filename = `${mediaInfo.platform}_video_${i + 1}.${item.formats[0].ext || "mp4"}`;
         }
 
         if (cdnUrl) {
           let blob: Blob;
           if (cdnUrl.startsWith("data:")) {
             blob = await (await fetch(cdnUrl)).blob();
+            // Detect correct extension from data URL
+            if (item.type === "photo") {
+              const ext = getImageExtFromDataUrl(cdnUrl);
+              filename = `${mediaInfo.platform}_photo_${i + 1}.${ext}`;
+            } else {
+              filename = `${mediaInfo.platform}_video_${i + 1}.mp4`;
+            }
           } else if (cdnUrl.startsWith("/api/")) {
             const res = await fetch(cdnUrl);
             if (!res.ok) throw new Error(`Download failed for item ${i + 1} (${res.status})`);
             blob = await res.blob();
+            // Detect correct extension from server response MIME type
+            if (item.type === "photo") {
+              const ext = await getImageExtFromBlob(blob);
+              filename = `${mediaInfo.platform}_photo_${i + 1}.${ext}`;
+            } else {
+              filename = `${mediaInfo.platform}_video_${i + 1}.mp4`;
+            }
           } else {
-            const ext = item.type === "photo" ? "image/jpeg" : "video/mp4";
-            const data = await fetchWithProgress(cdnUrl, filename, (pct) => {
+            const tempLabel = `${mediaInfo.platform}_${item.type}_${i + 1}`;
+            const data = await fetchWithProgress(cdnUrl, tempLabel, (pct) => {
               const perItemShare = 90 / totalItems;
               const overallPct = Math.round((i * perItemShare) + (pct / 100) * perItemShare);
               setDownloadProgress(overallPct);
             });
-            blob = new Blob([data as BlobPart], { type: ext });
+            // Detect correct extension from magic bytes
+            if (item.type === "photo") {
+              const ext = getImageExtFromBytes(data);
+              blob = new Blob([data as BlobPart], { type: `image/${ext === "jpg" ? "jpeg" : ext}` });
+              filename = `${mediaInfo.platform}_photo_${i + 1}.${ext}`;
+            } else {
+              const fmtExt = item.formats[0]?.ext || "mp4";
+              blob = new Blob([data as BlobPart], { type: "video/mp4" });
+              filename = `${mediaInfo.platform}_video_${i + 1}.${fmtExt}`;
+            }
           }
           // Add file to ZIP archive
           zip.file(filename, blob);
