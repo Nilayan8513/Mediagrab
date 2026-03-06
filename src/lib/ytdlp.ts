@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
 import { analyzeWithCobalt } from "./cobalt";
+import { analyzeTwitterUrl } from "./twitter-scraper";
 import { resolve } from "path";
 
 // ─── Cookie Handling ──────────────────────────────────────────────────────────
@@ -130,17 +131,33 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
 
   // ── YouTube: handled by InnerTube in analyze/route.ts, this is fallback ──
   if (platform === "youtube") {
+    let lastError: Error | null = null;
+
     try {
       return await analyzeWithYtDlp(url, platform);
     } catch (ytdlpErr) {
-      const ytdlpMsg = ytdlpErr instanceof Error ? ytdlpErr.message : "";
-      console.error("yt-dlp failed for YouTube:", ytdlpMsg);
+      lastError = ytdlpErr instanceof Error ? ytdlpErr : new Error(String(ytdlpErr));
+      const ytdlpMsg = lastError.message || "";
+      console.error("yt-dlp failed for YouTube (attempt 1):", ytdlpMsg);
+
+      // If it's a format error, try with alternative yt-dlp config
+      if (ytdlpMsg.includes("Requested format is not available")) {
+        try {
+          console.log("Retrying with alternative yt-dlp config...");
+          return await analyzeWithYtDlpAlternative(url);
+        } catch (altErr) {
+          console.error("yt-dlp alternative config failed:", altErr);
+        }
+      }
+
+      // Try cobalt as fallback
       try {
         const cobaltResult = await analyzeWithCobalt(url);
         if (cobaltResult.items.length > 0) return cobaltResult;
       } catch (cobaltErr) {
         console.error("Cobalt also failed:", cobaltErr);
       }
+
       if (ytdlpMsg.includes("Sign in") || ytdlpMsg.includes("bot")) {
         throw new Error(
           "YouTube requires authentication. Please update your cookies.txt."
@@ -180,9 +197,16 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
     );
   }
 
-  // ── Twitter/X: analyze only, return raw CDN URLs for client-side handling ──
+  // ── Twitter/X: Use GraphQL scraper (no yt-dlp, direct mp4 URLs) ──
   if (platform === "twitter") {
-    return await analyzeTwitter(url);
+    try {
+      const result = await analyzeTwitterUrl(url);
+      if (result.items.length > 0) return result;
+    } catch (scraperErr) {
+      console.error("Twitter scraper failed, trying yt-dlp:", scraperErr instanceof Error ? scraperErr.message : scraperErr);
+    }
+    // Fallback to yt-dlp (filtered to direct mp4 only)
+    return await analyzeTwitterYtDlp(url);
   }
 
   // ── Facebook ──
@@ -195,14 +219,14 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
   );
 }
 
-// ─── Twitter: extract direct CDN URLs (no pre-download) ──────────────────────
-// Twitter DASH streams: video (mp4, no audio) + audio (m4a) separate.
-// We return them as-is so the client can merge via FFmpeg.wasm — same as YouTube 1080p+.
+// ─── Twitter yt-dlp fallback (only direct mp4 URLs) ──────────────────────────
 
-async function analyzeTwitter(url: string): Promise<MediaInfo> {
+async function analyzeTwitterYtDlp(url: string): Promise<MediaInfo> {
   return new Promise((resolve, reject) => {
     const args = [
       "--dump-single-json",
+      "--no-check-formats",  // Don't validate format availability
+      "--skip-download",     // Don't try to download
       "--no-warnings",
       "--no-check-certificates",
       "--force-ipv4",
@@ -385,6 +409,8 @@ async function analyzeWithYtDlp(
     const args = [
       ...(withCookies ? getCookieArgs("yt-dlp") : []),
       "--dump-single-json",
+      "--no-check-formats",  // Don't validate format availability during dump
+      "--skip-download",     // Don't try to download during analysis
       "--no-warnings",
       "--no-check-certificates",
       "--force-ipv4",
@@ -393,9 +419,9 @@ async function analyzeWithYtDlp(
       "--socket-timeout", "30",
     ];
 
-    if (platform === "youtube") {
-      args.push("--extractor-args", "youtube:player_client=web");
-    }
+    // NOTE: Do NOT set player_client=web — it requires a JavaScript runtime (Deno)
+    // for signature decryption. Let yt-dlp use its default client (android_vr) which
+    // works without a JS runtime.
 
     args.push(url);
 
@@ -464,6 +490,76 @@ async function analyzeWithYtDlp(
     setTimeout(
       () => { proc.kill(); reject(new Error("yt-dlp timed out")); },
       90000
+    );
+  });
+}
+
+// ─── Alternative YouTube Analysis (for format-error fallback) ────────────────
+
+async function analyzeWithYtDlpAlternative(url: string): Promise<MediaInfo> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      ...(shouldUseCookies("youtube") ? getCookieArgs("yt-dlp") : []),
+      "--dump-single-json",
+      "--no-check-formats",  // Don't validate format availability
+      "--skip-download",     // Don't try to download
+      "--no-warnings",
+      "--no-check-certificates",
+      "--force-ipv4",
+      "--user-agent", USER_AGENT,
+      "--extractor-retries", "1",
+      "--socket-timeout", "30",
+      // Don't force a specific player_client — let yt-dlp pick the best default
+      url,
+    ];
+
+    console.log("[analyze] YouTube: yt-dlp with alternative config (TV player, no format validation)");
+    const proc = spawn("yt-dlp", args);
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `yt-dlp alternative config failed with code ${code}`));
+        return;
+      }
+
+      try {
+        const data = JSON.parse(stdout);
+        const items: MediaItem[] = [];
+
+        if (data.entries && Array.isArray(data.entries)) {
+          data.entries.forEach((entry: Record<string, unknown>, idx: number) => {
+            const item = parseYtDlpEntry(entry, idx);
+            if (item) items.push(item);
+          });
+        } else {
+          const item = parseYtDlpEntry(data, 0);
+          if (item) items.push(item);
+        }
+
+        resolve({
+          platform: "youtube",
+          title: data.title || data.playlist_title || "Untitled",
+          uploader: data.uploader || data.channel || data.playlist_uploader || "Unknown",
+          items,
+          original_url: url,
+        });
+      } catch {
+        reject(new Error("Failed to parse yt-dlp alternative output"));
+      }
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error(`Failed to run yt-dlp alternative: ${err.message}`));
+    });
+
+    setTimeout(
+      () => { proc.kill(); reject(new Error("yt-dlp alternative timed out")); },
+      60000
     );
   });
 }
@@ -589,6 +685,16 @@ export function clearProgress(id: string) {
 // NOTE: Twitter/Facebook no longer use server-side pre-download.
 // They now return raw CDN URLs for client-side proxy download + FFmpeg.wasm merge.
 
+function extractHeightFromFormatId(formatId: string): number {
+  // Try to extract height constraint from format ID if it exists
+  const match = formatId.match(/\d+/);
+  if (match) {
+    const height = parseInt(match[0], 10);
+    if (height > 0 && height <= 4320) return height;
+  }
+  return 1440; // Default fallback height limit
+}
+
 export function downloadVideo(
   url: string,
   formatId: string,
@@ -597,22 +703,30 @@ export function downloadVideo(
   return new Promise((resolve, reject) => {
     const tmpDir = process.env.TEMP || process.env.TMP || "/tmp";
     const outTemplate = `${tmpDir}/mediagrab_${downloadId}.%(ext)s`;
-    const defaultFormat =
-      "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]/best";
+
+    // Build format string with multiple fallback options
+    // This ensures that even if a specific format is unavailable, we can fall back gracefully
+    let formatString: string;
+    if (formatId) {
+      // Try the requested format with audio, then without audio, then best available
+      formatString = `${formatId}+bestaudio/bestvideo[height<=${extractHeightFromFormatId(formatId)}]+bestaudio/bestvideo+bestaudio/best[height<=1440]/best`;
+    } else {
+      formatString = "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]/best";
+    }
 
     const args = [
       ...getCookieArgs("yt-dlp"),
       "-f",
-      formatId
-        ? `${formatId}+bestaudio/best/${formatId}`
-        : defaultFormat,
+      formatString,
       "--merge-output-format", "mp4",
       "--no-warnings",
       "--no-check-certificates",
+      "--no-check-formats",  // Don't validate format availability
       "--force-ipv4",
       "--user-agent", USER_AGENT,
       "--extractor-retries", "3",
-      "--extractor-args", "youtube:player_client=web",
+      // NOTE: Do NOT set player_client=web — requires JS runtime (Deno)
+      "--socket-timeout", "30",
       "--newline",
       "-o", outTemplate,
       url,
@@ -643,14 +757,27 @@ export function downloadVideo(
       if (mergeMatch) lastFile = mergeMatch[1].trim();
     });
 
+    let stderrOutput = "";
     proc.stderr.on("data", (chunk) => {
-      console.error("yt-dlp stderr:", chunk.toString());
+      const output = chunk.toString();
+      stderrOutput += output;
+      console.error("yt-dlp stderr:", output);
     });
 
     proc.on("close", (code) => {
       if (code !== 0) {
         setProgress(downloadId, { percent: 0, speed: "", eta: "", status: "error" });
-        reject(new Error(`yt-dlp exited with code ${code}`));
+
+        // Provide more helpful error messages
+        if (stderrOutput.includes("Requested format is not available")) {
+          reject(new Error("The selected video quality is not available for this video. Try a different quality option."));
+        } else if (stderrOutput.includes("Sign in") || stderrOutput.includes("login")) {
+          reject(new Error("YouTube requires authentication. Please ensure your cookies are up to date."));
+        } else if (stderrOutput.includes("Video unavailable") || stderrOutput.includes("not available")) {
+          reject(new Error("This video is not available (may be deleted, private, or geo-blocked)."));
+        } else {
+          reject(new Error(`Download failed: ${stderrOutput.split('\n')[0] || 'Unknown error'}`));
+        }
         return;
       }
       setProgress(downloadId, { percent: 100, speed: "", eta: "", status: "complete" });

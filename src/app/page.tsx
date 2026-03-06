@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import JSZip from "jszip";
 import UrlInput from "@/components/UrlInput";
 import PreviewCard from "@/components/PreviewCard";
 import QualitySelector from "@/components/QualitySelector";
@@ -281,18 +282,25 @@ export default function Home() {
     }
   }, [mediaInfo, activeItem]);
 
-  // ─── Download All ─────────────────────────────────────────────────────────────
+  // ─── Download All as ZIP ───────────────────────────────────────────────────────
   const handleDownloadAll = useCallback(async () => {
     if (!mediaInfo) return;
     setDownloadStatus("downloading");
     setDownloadProgress(0);
+    setDownloadSpeed("Preparing ZIP...");
+    setDownloadEta("");
     setError(null);
 
     try {
+      const zip = new JSZip();
       const items = mediaInfo.items;
-      for (let i = 0; i < items.length; i++) {
+      const totalItems = items.length;
+
+      for (let i = 0; i < totalItems; i++) {
         const item = items[i];
-        setDownloadProgress(Math.round((i / items.length) * 100));
+        const itemProgress = Math.round((i / totalItems) * 90); // 0-90% for downloading
+        setDownloadProgress(itemProgress);
+        setDownloadSpeed(`Downloading item ${i + 1} of ${totalItems}...`);
 
         let cdnUrl = "";
         let filename = "";
@@ -312,18 +320,40 @@ export default function Home() {
             blob = await (await fetch(cdnUrl)).blob();
           } else if (cdnUrl.startsWith("/api/")) {
             const res = await fetch(cdnUrl);
-            if (!res.ok) throw new Error(`Download failed (${res.status})`);
+            if (!res.ok) throw new Error(`Download failed for item ${i + 1} (${res.status})`);
             blob = await res.blob();
           } else {
-            const data = await fetchWithProgress(cdnUrl, filename);
-            blob = new Blob([data as BlobPart], { type: "video/mp4" });
+            const ext = item.type === "photo" ? "image/jpeg" : "video/mp4";
+            const data = await fetchWithProgress(cdnUrl, filename, (pct) => {
+              const perItemShare = 90 / totalItems;
+              const overallPct = Math.round((i * perItemShare) + (pct / 100) * perItemShare);
+              setDownloadProgress(overallPct);
+            });
+            blob = new Blob([data as BlobPart], { type: ext });
           }
-          triggerDownload(blob, filename);
-          await new Promise((r) => setTimeout(r, 500));
+          // Add file to ZIP archive
+          zip.file(filename, blob);
         }
       }
+
+      // Generate ZIP
+      setDownloadProgress(92);
+      setDownloadSpeed("Creating ZIP archive...");
+      setDownloadStatus("merging");
+
+      const zipBlob = await zip.generateAsync(
+        { type: "blob", compression: "DEFLATE", compressionOptions: { level: 1 } },
+        (metadata) => {
+          // metadata.percent goes from 0 to 100
+          setDownloadProgress(92 + Math.round(metadata.percent * 0.08));
+        }
+      );
+
+      const zipFilename = `${mediaInfo.platform}_${mediaInfo.title.slice(0, 40).replace(/[^a-zA-Z0-9]/g, "_")}_all.zip`;
+      triggerDownload(zipBlob, zipFilename);
       setDownloadStatus("complete");
       setDownloadProgress(100);
+      setDownloadSpeed("");
     } catch (err) {
       setDownloadStatus("error");
       setError(err instanceof Error ? err.message : "Download failed");
