@@ -122,6 +122,10 @@ export async function analyzeWithInstaloader(
                             }
                         }
 
+                        // Photos: use base64 data URL (already in thumbnail) so download is 100% client-side
+                        // Videos: use /api/serve-file since video data is too large for base64
+                        const videoServeUrl = `/api/serve-file?path=${encodeURIComponent(filePath)}`;
+
                         items.push({
                             type: isVideo ? "video" : "photo",
                             title: `Item ${i + 1}`,
@@ -138,11 +142,11 @@ export async function analyzeWithInstaloader(
                                     acodec: null,
                                     height: null,
                                     fps: null,
-                                    url: null,
+                                    url: videoServeUrl,
                                     has_audio: true,
                                 }]
                                 : [],
-                            direct_url: filePath,
+                            direct_url: isVideo ? videoServeUrl : thumbnail,
                             audio_url: null,
                             index: i,
                         });

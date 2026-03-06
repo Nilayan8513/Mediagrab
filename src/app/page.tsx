@@ -132,11 +132,24 @@ export default function Home() {
       let filename: string;
 
       if (activeItem.type === "photo") {
-        // ── PHOTO: client-side proxy ──
+        // ── PHOTO: fully client-side ──
         const cdnUrl = activeItem.direct_url;
-        if (!cdnUrl || !cdnUrl.startsWith("http")) throw new Error("No download URL available for this photo");
+        if (!cdnUrl) throw new Error("No download URL available for this photo");
         filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
-        blob = await proxyDownload(cdnUrl, filename, (pct) => setDownloadProgress(pct));
+        if (cdnUrl.startsWith("data:")) {
+          // Base64 data URL from instaloader — convert to blob in browser (zero server load)
+          const res = await fetch(cdnUrl);
+          blob = await res.blob();
+          setDownloadProgress(100);
+        } else if (cdnUrl.startsWith("/api/")) {
+          const res = await fetch(cdnUrl);
+          if (!res.ok) throw new Error(`Download failed (${res.status})`);
+          blob = await res.blob();
+        } else if (cdnUrl.startsWith("http")) {
+          blob = await proxyDownload(cdnUrl, filename, (pct) => setDownloadProgress(pct));
+        } else {
+          throw new Error("No download URL available for this photo");
+        }
 
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
         // ── VIDEO-ONLY: merge video+audio in browser via FFmpeg.wasm ──
@@ -279,7 +292,7 @@ export default function Home() {
         let cdnUrl = "";
         let filename = "";
 
-        if (item.direct_url?.startsWith("http")) {
+        if (item.direct_url?.startsWith("data:") || item.direct_url?.startsWith("http") || item.direct_url?.startsWith("/api/")) {
           cdnUrl = item.direct_url;
           const ext = item.type === "photo" ? "jpg" : "mp4";
           filename = `${mediaInfo.platform}_${item.type}_${i + 1}.${ext}`;
@@ -289,7 +302,18 @@ export default function Home() {
         }
 
         if (cdnUrl) {
-          const blob = await proxyDownload(cdnUrl, filename);
+          let blob: Blob;
+          if (cdnUrl.startsWith("data:")) {
+            // Base64 data URL — convert to blob in browser (zero server load)
+            const res = await fetch(cdnUrl);
+            blob = await res.blob();
+          } else if (cdnUrl.startsWith("/api/")) {
+            const res = await fetch(cdnUrl);
+            if (!res.ok) throw new Error(`Download failed (${res.status})`);
+            blob = await res.blob();
+          } else {
+            blob = await proxyDownload(cdnUrl, filename);
+          }
           triggerDownload(blob, filename);
           // Delay between downloads to prevent browser throttling
           await new Promise(r => setTimeout(r, 500));
