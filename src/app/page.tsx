@@ -46,11 +46,6 @@ interface MediaInfo {
 
 type DownloadStatus = "idle" | "downloading" | "merging" | "complete" | "error";
 
-const HIGH_QUALITY_LABELS = new Set(["4K", "1440p", "8K"]);
-
-// Platforms where ALL downloads must be direct browser fetch (IP-locked CDN URLs with CORS)
-const DIRECT_FETCH_PLATFORMS = new Set(["youtube"]);
-
 /** Detect image format from magic bytes in a Uint8Array */
 function getImageExtFromBytes(bytes: Uint8Array): string {
   if (bytes.length < 12) return "jpg";
@@ -118,8 +113,6 @@ export default function Home() {
   );
   const needsBrowserMerge =
     selectedFormatObj && !selectedFormatObj.has_audio && !!activeItem?.audio_url;
-  const isHighQuality =
-    selectedFormatObj && HIGH_QUALITY_LABELS.has(selectedFormatObj.quality);
 
   const handleSelectItem = (index: number) => {
     setActiveItemIndex(index);
@@ -169,7 +162,6 @@ export default function Home() {
     setError(null);
 
     const platform = mediaInfo.platform;
-    const isDirectPlatform = DIRECT_FETCH_PLATFORMS.has(platform);
 
     try {
       const format =
@@ -235,29 +227,8 @@ export default function Home() {
           }
         );
 
-      } else if (format && format.url && format.has_audio && isDirectPlatform) {
-        // ── YOUTUBE/TWITTER COMBINED: direct browser fetch (IP-locked URL) ──
-        // Must NOT go through server proxy — CDN URL is signed for browser's IP
-        filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
-
-        if (isM3u8Url(format.url)) {
-          blob = await downloadM3u8Video(format.url, "output.mp4", (p: FFmpegProgress) => {
-            setDownloadProgress(p.percent);
-            setDownloadSpeed(p.message);
-          });
-        } else {
-          // Direct fetch from browser — fetchWithProgress handles this correctly
-          // because googlevideo.com and twimg.com are in shouldFetchDirectly()
-          const data = await fetchWithProgress(
-            format.url,
-            filename,
-            (pct) => setDownloadProgress(pct)
-          );
-          blob = new Blob([data as BlobPart], { type: "video/mp4" });
-        }
-
       } else if (format && format.url) {
-        // ── OTHER PLATFORMS (Instagram/Facebook): through proxy ──
+        // ── ALL PLATFORMS: fetch via proxy (CORS bypass, streams to browser) ──
         filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
         if (isM3u8Url(format.url)) {
           blob = await downloadM3u8Video(format.url, "output.mp4", (p: FFmpegProgress) => {
@@ -492,17 +463,16 @@ export default function Home() {
             />
           )}
 
-          {/* 4K / 1440p browser-merge notice */}
-          {needsBrowserMerge && isHighQuality && downloadStatus === "idle" && (
+          {/* Browser-merge notice — only for video-only formats */}
+          {needsBrowserMerge && downloadStatus === "idle" && (
             <div className="animate-fade-up flex items-start gap-2.5 px-4 py-3 text-sm"
-              style={{ background: "rgba(234,179,8,0.08)", color: "#ca8a04", borderRadius: "12px", border: "1px solid rgba(234,179,8,0.2)" }}>
+              style={{ background: "rgba(99,102,241,0.08)", color: "#818cf8", borderRadius: "12px", border: "1px solid rgba(99,102,241,0.15)" }}>
               <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
               </svg>
               <span>
-                <strong>{selectedFormatObj?.quality}</strong> requires merging video &amp; audio in your browser.
-                This may take a few minutes and needs ~{selectedFormatObj?.quality === "4K" ? "4" : "2"}GB free RAM.
+                <strong>{selectedFormatObj?.quality}</strong> will merge video + audio in your browser.
+                Uses your device&apos;s resources — no server processing.
               </span>
             </div>
           )}

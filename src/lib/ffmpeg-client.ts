@@ -2,17 +2,13 @@
  * Client-side FFmpeg helper using ffmpeg.wasm
  *
  * FETCH STRATEGY:
- * ┌─────────────────────────────┬──────────────────────────────────────────┐
- * │ Platform                    │ How to fetch                             │
- * ├─────────────────────────────┼──────────────────────────────────────────┤
- * │ YouTube (googlevideo.com)   │ Direct browser fetch — IP-locked URL     │
- * │ Twitter (video.twimg.com)   │ Server proxy — no CORS headers from CDN  │
- * │ Instagram (scontent/cdnig)  │ Server proxy — needs Referer header      │
- * │ Facebook (fbcdn)            │ Server proxy — needs Referer header      │
- * └─────────────────────────────┴──────────────────────────────────────────┘
+ * All platform CDN URLs go through /api/proxy which:
+ *   - Adds correct Referer / User-Agent headers
+ *   - Streams bytes directly to the browser (no server-side storage)
+ *   - Adds CORS headers so browser fetch() works
  *
- * Only YouTube CDN sends Access-Control-Allow-Origin for direct browser fetch.
- * All other platforms must go through /api/proxy which sets correct headers.
+ * The proxy is just a pass-through — all processing (FFmpeg merge, file save)
+ * happens in the browser using client system resources.
  */
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
@@ -35,19 +31,11 @@ export type FFmpegProgress = {
 
 // ─── Fetch strategy ───────────────────────────────────────────────────────────
 
-function shouldFetchDirectly(url: string): boolean {
-    try {
-        const { hostname } = new URL(url);
-        // Only YouTube CDN supports CORS for direct browser fetch.
-        // Twitter CDN does NOT send Access-Control-Allow-Origin → browser blocks.
-        return (
-            hostname.endsWith("googlevideo.com") ||
-            hostname.endsWith("youtube.com") ||
-            hostname.endsWith("youtu.be")
-        );
-    } catch {
-        return false;
-    }
+/** All CDN URLs go through /api/proxy for reliable CORS + correct headers */
+function shouldFetchDirectly(_url: string): boolean {
+    // Always proxy — CDN URLs don't reliably serve CORS headers for fetch().
+    // The proxy streams bytes directly (no server storage / processing).
+    return false;
 }
 
 // ─── Load FFmpeg (singleton) ──────────────────────────────────────────────────
