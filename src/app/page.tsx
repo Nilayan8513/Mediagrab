@@ -9,7 +9,7 @@ import { PlatformLogo } from "@/components/PlatformLogos";
 import {
   mergeVideoAudio,
   extractAudio,
-  proxyDownload,
+  fetchWithProgress,
   isM3u8Url,
   downloadM3u8Video,
   type FFmpegProgress,
@@ -45,6 +45,11 @@ interface MediaInfo {
 
 type DownloadStatus = "idle" | "downloading" | "merging" | "complete" | "error";
 
+const HIGH_QUALITY_LABELS = new Set(["4K", "1440p", "8K"]);
+
+// Platforms where ALL downloads must be direct browser fetch (IP-locked CDN URLs)
+const DIRECT_FETCH_PLATFORMS = new Set(["youtube", "twitter"]);
+
 export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
@@ -61,16 +66,22 @@ export default function Home() {
   const activeItem = mediaInfo?.items[activeItemIndex] || null;
   const isCarousel = (mediaInfo?.items.length || 0) > 1;
 
+  const selectedFormatObj = activeItem?.formats.find(
+    (f) => f.format_id === selectedFormat
+  );
+  const needsBrowserMerge =
+    selectedFormatObj && !selectedFormatObj.has_audio && !!activeItem?.audio_url;
+  const isHighQuality =
+    selectedFormatObj && HIGH_QUALITY_LABELS.has(selectedFormatObj.quality);
+
   const handleSelectItem = (index: number) => {
     setActiveItemIndex(index);
     setDownloadStatus("idle");
     const item = mediaInfo?.items[index];
-    if (item?.formats?.length) {
-      setSelectedFormat(item.formats[0].format_id);
-    }
+    if (item?.formats?.length) setSelectedFormat(item.formats[0].format_id);
   };
 
-  // ─── Analyze (server-side — lightweight metadata extraction only) ─────────────
+  // ─── Analyze ─────────────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async (url: string) => {
     setIsAnalyzing(true);
     setError(null);
@@ -87,14 +98,8 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-
       const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.error || "Analysis failed");
-        return;
-      }
-
+      if (!res.ok) { setError(data.error || "Analysis failed"); return; }
       setMediaInfo(data);
       if (data.items?.[0]?.formats?.length > 0) {
         setSelectedFormat(data.items[0].formats[0].format_id);
@@ -106,14 +111,7 @@ export default function Home() {
     }
   }, []);
 
-  // ─── ALL Downloads Are Client-Side ──────────────────────────────────────────
-  // Server only does analysis. ALL downloads happen in the browser:
-  //   • Combined formats (has_audio) → proxy download
-  //   • Video-only formats (YouTube 1080p+) → proxy download video + audio → merge in browser (FFmpeg.wasm)
-  //   • Audio extraction → proxy download audio stream → convert to MP3 in browser (FFmpeg.wasm)
-  //   • Photos → proxy download
-  //   • Instagram → proxy download from CDN URL
-
+  // ─── Download ─────────────────────────────────────────────────────────────────
   const handleDownloadItem = useCallback(async () => {
     if (!mediaInfo || !activeItem) return;
 
@@ -123,21 +121,25 @@ export default function Home() {
     setDownloadEta("");
     setError(null);
 
+    const platform = mediaInfo.platform;
+    const isDirectPlatform = DIRECT_FETCH_PLATFORMS.has(platform);
+
     try {
-      const format = activeItem.type === "video" && activeItem.formats.length > 0
-        ? (activeItem.formats.find(f => f.format_id === selectedFormat) || activeItem.formats[0])
-        : null;
+      const format =
+        activeItem.type === "video" && activeItem.formats.length > 0
+          ? activeItem.formats.find((f) => f.format_id === selectedFormat) ||
+          activeItem.formats[0]
+          : null;
 
       let blob: Blob;
       let filename: string;
 
       if (activeItem.type === "photo") {
-        // ── PHOTO: fully client-side ──
+        // ── PHOTO ──
         const cdnUrl = activeItem.direct_url;
         if (!cdnUrl) throw new Error("No download URL available for this photo");
-        filename = `${mediaInfo.platform}_photo_${activeItemIndex + 1}.jpg`;
+        filename = `${platform}_photo_${activeItemIndex + 1}.jpg`;
         if (cdnUrl.startsWith("data:")) {
-          // Base64 data URL from instaloader — convert to blob in browser (zero server load)
           const res = await fetch(cdnUrl);
           blob = await res.blob();
           setDownloadProgress(100);
@@ -145,63 +147,91 @@ export default function Home() {
           const res = await fetch(cdnUrl);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
           blob = await res.blob();
-        } else if (cdnUrl.startsWith("http")) {
-          blob = await proxyDownload(cdnUrl, filename, (pct) => setDownloadProgress(pct));
         } else {
-          throw new Error("No download URL available for this photo");
+          const data = await fetchWithProgress(cdnUrl, filename, (pct) => setDownloadProgress(pct));
+          blob = new Blob([data as BlobPart], { type: "image/jpeg" });
         }
 
       } else if (format && format.url && !format.has_audio && activeItem.audio_url) {
-        // ── VIDEO-ONLY: merge video+audio in browser via FFmpeg.wasm ──
-        filename = `${mediaInfo.platform}_video_${format.quality}.mp4`;
-        blob = await mergeVideoAudio(format.url, activeItem.audio_url, "output.mp4", (p: FFmpegProgress) => {
-          switch (p.phase) {
-            case "loading":
-              setDownloadSpeed("Loading FFmpeg...");
-              setDownloadProgress(0);
-              break;
-            case "downloading_video":
-              setDownloadSpeed("Downloading video...");
-              setDownloadProgress(Math.round(p.percent * 0.4));
-              break;
-            case "downloading_audio":
-              setDownloadSpeed("Downloading audio...");
-              setDownloadProgress(40 + Math.round(p.percent * 0.2));
-              break;
-            case "merging":
-              setDownloadStatus("merging");
-              setDownloadSpeed("Merging in browser...");
-              setDownloadProgress(60 + Math.round(p.percent * 0.4));
-              break;
+        // ── VIDEO-ONLY: needs merge (YouTube 1440p/4K, Twitter split streams) ──
+        filename = `${platform}_${format.quality}.mp4`;
+        blob = await mergeVideoAudio(
+          format.url,
+          activeItem.audio_url,
+          "output.mp4",
+          (p: FFmpegProgress) => {
+            switch (p.phase) {
+              case "loading":
+                setDownloadSpeed("Loading FFmpeg...");
+                setDownloadProgress(0);
+                break;
+              case "downloading_video":
+                setDownloadSpeed("Downloading video stream...");
+                setDownloadProgress(Math.round(p.percent * 0.4));
+                break;
+              case "downloading_audio":
+                setDownloadSpeed("Downloading audio stream...");
+                setDownloadProgress(40 + Math.round(p.percent * 0.1));
+                break;
+              case "merging":
+                setDownloadStatus("merging");
+                setDownloadSpeed("Merging in browser...");
+                setDownloadProgress(50 + Math.round(p.percent * 0.5));
+                break;
+            }
           }
-        });
+        );
+
+      } else if (format && format.url && format.has_audio && isDirectPlatform) {
+        // ── YOUTUBE/TWITTER COMBINED: direct browser fetch (IP-locked URL) ──
+        // Must NOT go through server proxy — CDN URL is signed for browser's IP
+        filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
+
+        if (isM3u8Url(format.url)) {
+          blob = await downloadM3u8Video(format.url, "output.mp4", (p: FFmpegProgress) => {
+            setDownloadProgress(p.percent);
+            setDownloadSpeed(p.message);
+          });
+        } else {
+          // Direct fetch from browser — fetchWithProgress handles this correctly
+          // because googlevideo.com and twimg.com are in shouldFetchDirectly()
+          const data = await fetchWithProgress(
+            format.url,
+            filename,
+            (pct) => setDownloadProgress(pct)
+          );
+          blob = new Blob([data as BlobPart], { type: "video/mp4" });
+        }
 
       } else if (format && format.url) {
-        // ── VIDEO with URL: client-side download ──
-        filename = `${mediaInfo.platform}_video_${format.quality}.${format.ext || "mp4"}`;
-        // For local serve-file URLs (Twitter/FB pre-downloaded), fetch directly
-        if (format.url.startsWith("/api/")) {
+        // ── OTHER PLATFORMS (Instagram/Facebook): through proxy ──
+        filename = `${platform}_${format.quality}.${format.ext || "mp4"}`;
+        if (isM3u8Url(format.url)) {
+          blob = await downloadM3u8Video(format.url, "output.mp4", (p: FFmpegProgress) => {
+            setDownloadProgress(p.percent);
+            setDownloadSpeed(p.message);
+          });
+        } else if (format.url.startsWith("/api/")) {
           const res = await fetch(format.url);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
           blob = await res.blob();
         } else {
-          blob = await proxyDownload(format.url, filename, (pct) => setDownloadProgress(pct));
+          const data = await fetchWithProgress(format.url, filename, (pct) => setDownloadProgress(pct));
+          blob = new Blob([data as BlobPart], { type: "video/mp4" });
         }
 
       } else if (activeItem.direct_url) {
-        // ── Fallback: direct URL ──
-        const ext = (activeItem.type as string) === "photo" ? "jpg" : "mp4";
-        filename = `${mediaInfo.platform}_media_${activeItemIndex + 1}.${ext}`;
+        // ── FALLBACK ──
+        const ext = (activeItem as MediaItem).type === "photo" ? "jpg" : "mp4";
+        filename = `${platform}_media_${activeItemIndex + 1}.${ext}`;
         if (activeItem.direct_url.startsWith("/api/")) {
           const res = await fetch(activeItem.direct_url);
           if (!res.ok) throw new Error(`Download failed (${res.status})`);
           blob = await res.blob();
-        } else if (activeItem.direct_url.startsWith("http")) {
-          blob = await proxyDownload(activeItem.direct_url, filename, (pct) => setDownloadProgress(pct));
         } else {
-          throw new Error("No download URL available");
+          const data = await fetchWithProgress(activeItem.direct_url, filename, (pct) => setDownloadProgress(pct));
+          blob = new Blob([data as BlobPart], { type: ext === "jpg" ? "image/jpeg" : "video/mp4" });
         }
-
       } else {
         throw new Error("No download URL available for this item");
       }
@@ -215,7 +245,7 @@ export default function Home() {
     }
   }, [mediaInfo, activeItem, selectedFormat, activeItemIndex]);
 
-  // ─── Audio Download (client-side via FFmpeg.wasm) ────────────────────────────
+  // ─── Audio Download ───────────────────────────────────────────────────────────
   const handleDownloadAudio = useCallback(async () => {
     if (!mediaInfo || !activeItem) return;
     setAudioStatus("downloading");
@@ -223,48 +253,24 @@ export default function Home() {
     setError(null);
 
     try {
-      // Find the best audio stream URL
       let audioUrl = activeItem.audio_url;
       if (!audioUrl) {
-        // Try to find an audio-only format
-        const audioFormat = activeItem.formats.find(f => f.has_audio && f.url);
-        if (audioFormat?.url) {
-          audioUrl = audioFormat.url;
-        }
+        const af = activeItem.formats.find((f) => f.has_audio && f.url);
+        if (af?.url) audioUrl = af.url;
       }
-
-      // For combined formats, use the format's URL directly
-      if (!audioUrl) {
-        const combined = activeItem.formats.find(f => f.has_audio && f.url);
-        if (combined?.url) {
-          audioUrl = combined.url;
-        }
-      }
-
-      if (!audioUrl) {
-        throw new Error("No audio stream available for this item");
-      }
+      if (!audioUrl) throw new Error("No audio stream available for this item");
 
       const filename = `${mediaInfo.platform}_audio_${mediaInfo.title.slice(0, 50)}.mp3`;
-
-      const blob = await extractAudio(
-        audioUrl,
-        "output.mp3",
-        (p: FFmpegProgress) => {
-          switch (p.phase) {
-            case "loading":
-              setAudioProgress(0);
-              break;
-            case "downloading_audio":
-              setAudioProgress(Math.round(p.percent * 0.6)); // 0-60%
-              break;
-            case "converting":
-              setAudioStatus("merging"); // reuse merging state for "converting"
-              setAudioProgress(60 + Math.round(p.percent * 0.4)); // 60-100%
-              break;
-          }
+      const blob = await extractAudio(audioUrl, "output.mp3", (p: FFmpegProgress) => {
+        switch (p.phase) {
+          case "loading": setAudioProgress(0); break;
+          case "downloading_audio": setAudioProgress(Math.round(p.percent * 0.6)); break;
+          case "converting":
+            setAudioStatus("merging");
+            setAudioProgress(60 + Math.round(p.percent * 0.4));
+            break;
         }
-      );
+      });
 
       triggerDownload(blob, filename);
       setAudioStatus("complete");
@@ -275,10 +281,9 @@ export default function Home() {
     }
   }, [mediaInfo, activeItem]);
 
-  // ─── Download All (Carousel) — client-side ───────────────────────────────────
+  // ─── Download All ─────────────────────────────────────────────────────────────
   const handleDownloadAll = useCallback(async () => {
     if (!mediaInfo) return;
-
     setDownloadStatus("downloading");
     setDownloadProgress(0);
     setError(null);
@@ -304,22 +309,19 @@ export default function Home() {
         if (cdnUrl) {
           let blob: Blob;
           if (cdnUrl.startsWith("data:")) {
-            // Base64 data URL — convert to blob in browser (zero server load)
-            const res = await fetch(cdnUrl);
-            blob = await res.blob();
+            blob = await (await fetch(cdnUrl)).blob();
           } else if (cdnUrl.startsWith("/api/")) {
             const res = await fetch(cdnUrl);
             if (!res.ok) throw new Error(`Download failed (${res.status})`);
             blob = await res.blob();
           } else {
-            blob = await proxyDownload(cdnUrl, filename);
+            const data = await fetchWithProgress(cdnUrl, filename);
+            blob = new Blob([data as BlobPart], { type: "video/mp4" });
           }
           triggerDownload(blob, filename);
-          // Delay between downloads to prevent browser throttling
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, 500));
         }
       }
-
       setDownloadStatus("complete");
       setDownloadProgress(100);
     } catch (err) {
@@ -338,20 +340,14 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col">
       <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-10 sm:py-16">
-        {/* Platform logos */}
         <div className="flex items-center justify-center gap-3 mb-8">
           {platforms.map((p) => (
-            <div
-              key={p.key}
-              className="card-sm w-10 h-10 flex items-center justify-center cursor-default"
-              title={p.name}
-            >
+            <div key={p.key} className="card-sm w-10 h-10 flex items-center justify-center cursor-default" title={p.name}>
               <PlatformLogo platform={p.key} size={22} />
             </div>
           ))}
         </div>
 
-        {/* Title */}
         <div className="text-center mb-8 max-w-md">
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2" style={{ color: "var(--text-primary)" }}>
             Media<span style={{ color: "var(--accent)" }}>Grab</span>
@@ -361,34 +357,19 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Main Card */}
         <div className="card w-full max-w-lg p-6 sm:p-8 space-y-5">
-          <UrlInput
-            onAnalyze={handleAnalyze}
-            isLoading={isAnalyzing}
-            detectedPlatform={mediaInfo?.platform || null}
-          />
+          <UrlInput onAnalyze={handleAnalyze} isLoading={isAnalyzing} detectedPlatform={mediaInfo?.platform || null} />
 
-          {/* Error */}
           {error && (
-            <div
-              className="animate-fade-up flex items-start gap-2.5 px-4 py-3 rounded-12 text-sm"
-              style={{
-                background: "var(--error-bg)",
-                color: "var(--error)",
-                borderRadius: "12px",
-              }}
-            >
+            <div className="animate-fade-up flex items-start gap-2.5 px-4 py-3 text-sm"
+              style={{ background: "var(--error-bg)", color: "var(--error)", borderRadius: "12px" }}>
               <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="12" />
-                <line x1="12" y1="16" x2="12.01" y2="16" />
+                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
               </svg>
               <span>{error}</span>
             </div>
           )}
 
-          {/* Preview */}
           {mediaInfo && (
             <PreviewCard
               platform={mediaInfo.platform}
@@ -400,17 +381,30 @@ export default function Home() {
             />
           )}
 
-          {/* Quality Selector */}
           {activeItem && activeItem.type === "video" && activeItem.formats.length > 0 && (
             <QualitySelector
               formats={activeItem.formats}
               selectedFormat={selectedFormat}
-              onSelect={setSelectedFormat}
+              onSelect={(id) => { setSelectedFormat(id); setDownloadStatus("idle"); setDownloadProgress(null); }}
               disabled={downloadStatus === "downloading" || downloadStatus === "merging"}
             />
           )}
 
-          {/* Download */}
+          {/* 4K / 1440p browser-merge notice */}
+          {needsBrowserMerge && isHighQuality && downloadStatus === "idle" && (
+            <div className="animate-fade-up flex items-start gap-2.5 px-4 py-3 text-sm"
+              style={{ background: "rgba(234,179,8,0.08)", color: "#ca8a04", borderRadius: "12px", border: "1px solid rgba(234,179,8,0.2)" }}>
+              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>
+                <strong>{selectedFormatObj?.quality}</strong> requires merging video &amp; audio in your browser.
+                This may take a few minutes and needs ~{selectedFormatObj?.quality === "4K" ? "4" : "2"}GB free RAM.
+              </span>
+            </div>
+          )}
+
           {mediaInfo && activeItem && (
             <DownloadButton
               onClick={handleDownloadItem}
@@ -429,18 +423,14 @@ export default function Home() {
             />
           )}
         </div>
-
       </main>
 
-      {/* Footer */}
       <footer className="text-center py-6" style={{ color: "var(--text-muted)", fontSize: "12px" }}>
         <p>MediaGrab — For personal use only. Respect content creators&apos; rights.</p>
       </footer>
     </div>
   );
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function triggerDownload(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);

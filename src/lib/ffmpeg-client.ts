@@ -1,12 +1,19 @@
 /**
  * Client-side FFmpeg helper using ffmpeg.wasm
  *
- * KEY DESIGN: CDN URLs (googlevideo.com, video.twimg.com) are IP-locked signed
- * URLs — they MUST be fetched directly from the browser, NOT proxied through
- * the server (server has different IP → CDN rejects → returns bytes of error).
+ * FETCH STRATEGY:
+ * ┌─────────────────────────────┬──────────────────────────────────────────┐
+ * │ Platform                    │ How to fetch                             │
+ * ├─────────────────────────────┼──────────────────────────────────────────┤
+ * │ YouTube (googlevideo.com)   │ Direct browser fetch — IP-locked URL     │
+ * │ Twitter (video.twimg.com)   │ Direct browser fetch — IP-locked URL     │
+ * │ Instagram (scontent/cdnig)  │ Server proxy — needs Referer header      │
+ * │ Facebook (fbcdn)            │ Server proxy — needs Referer header      │
+ * └─────────────────────────────┴──────────────────────────────────────────┘
  *
- * Only non-CDN URLs (Instagram scontent, Facebook fbcdn) go through the proxy
- * because they require specific Referer headers the browser can't set directly.
+ * IP-locked means: the CDN signs the URL for the requesting IP.
+ * If your server proxies it, CDN sees a different IP → 403 or error bytes.
+ * Direct browser fetch works because browser IP = IP that got the URL.
  */
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
@@ -27,30 +34,25 @@ export type FFmpegProgress = {
     message: string;
 };
 
-// ─── Direct vs Proxy decision ─────────────────────────────────────────────────
-//
-// YouTube googlevideo.com + Twitter video.twimg.com are IP-locked:
-//   ✅ Browser fetches directly (CORS allowed, same IP as who requested the URL)
-//   ❌ Server proxy fails (different IP → CDN returns error bytes)
-//
-// Instagram scontent + Facebook fbcdn need Referer headers:
-//   ✅ Server proxy sets correct Referer
-//   ❌ Browser fetch blocked by CORS / missing Referer
+// ─── Fetch strategy ───────────────────────────────────────────────────────────
 
 function shouldFetchDirectly(url: string): boolean {
-    return (
-        url.includes("googlevideo.com") ||
-        url.includes("video.twimg.com") ||
-        url.includes("ton.twimg.com") ||
-        url.includes("pbs.twimg.com")
-    );
+    try {
+        const { hostname } = new URL(url);
+        return (
+            hostname.endsWith("googlevideo.com") ||
+            hostname.endsWith("twimg.com") ||        // video.twimg.com, pbs.twimg.com
+            hostname.endsWith("youtube.com") ||
+            hostname.endsWith("youtu.be")
+        );
+    } catch {
+        return false;
+    }
 }
 
-// ─── Load FFmpeg (singleton, cached) ─────────────────────────────────────────
+// ─── Load FFmpeg (singleton) ──────────────────────────────────────────────────
 
-async function loadFFmpeg(
-    onProgress?: (p: FFmpegProgress) => void
-): Promise<FFmpeg> {
+async function loadFFmpeg(onProgress?: (p: FFmpegProgress) => void): Promise<FFmpeg> {
     if (ffmpegInstance) return ffmpegInstance;
 
     if (ffmpegLoadPromise) {
@@ -60,21 +62,15 @@ async function loadFFmpeg(
 
     ffmpegLoadPromise = (async () => {
         onProgress?.({ phase: "loading", percent: 0, message: "Loading FFmpeg..." });
-
         const ffmpeg = new FFmpeg();
-
         ffmpeg.on("log", ({ message }) => {
             if (process.env.NODE_ENV === "development") console.log("[ffmpeg]", message);
         });
-
-        // jsDelivr is faster + more reliable than unpkg for large WASM files
         const baseURL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
-
         await ffmpeg.load({
             coreURL: `${baseURL}/ffmpeg-core.js`,
             wasmURL: `${baseURL}/ffmpeg-core.wasm`,
         });
-
         ffmpegInstance = ffmpeg;
         onProgress?.({ phase: "loading", percent: 100, message: "FFmpeg ready" });
         return ffmpeg;
@@ -83,44 +79,31 @@ async function loadFFmpeg(
     try {
         return await ffmpegLoadPromise;
     } catch (err) {
-        ffmpegLoadPromise = null; // allow retry
-        throw new Error(
-            `Failed to load FFmpeg: ${err instanceof Error ? err.message : "unknown"}`
-        );
+        ffmpegLoadPromise = null;
+        throw new Error(`Failed to load FFmpeg: ${err instanceof Error ? err.message : "unknown"}`);
     }
 }
 
-// ─── Core fetch with progress ─────────────────────────────────────────────────
+// ─── Fetch with progress ──────────────────────────────────────────────────────
 
-async function fetchWithProgress(
+export async function fetchWithProgress(
     url: string,
     label: string,
     onProgress?: (percent: number) => void
 ): Promise<Uint8Array> {
+
     const direct = shouldFetchDirectly(url);
+    const fetchUrl = direct
+        ? url
+        : `/api/proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(label)}`;
 
-    let fetchUrl: string;
-    let fetchOptions: RequestInit;
+    console.log(`[fetch] ${direct ? "DIRECT" : "PROXY"} → ${label} (${new URL(url).hostname})`);
 
-    if (direct) {
-        // Fetch directly from browser — CDN allows CORS, URL is signed for client IP
-        fetchUrl = url;
-        fetchOptions = { mode: "cors" };
-        console.log(`[fetch] DIRECT → ${label}`);
-    } else {
-        // Route through server proxy for Instagram/Facebook (need Referer)
-        fetchUrl = `/api/proxy?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(label)}`;
-        fetchOptions = {};
-        console.log(`[fetch] PROXY → ${label}`);
-    }
-
-    const res = await fetch(fetchUrl, fetchOptions);
+    const res = await fetch(fetchUrl, direct ? { mode: "cors" } : {});
 
     if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(
-            `Failed to download ${label} (HTTP ${res.status}): ${text.slice(0, 200)}`
-        );
+        throw new Error(`Failed to download ${label} (HTTP ${res.status}): ${text.slice(0, 300)}`);
     }
 
     const contentLength = res.headers.get("Content-Length");
@@ -143,13 +126,12 @@ async function fetchWithProgress(
         if (total > 0 && onProgress) {
             onProgress(Math.min(99, Math.round((received / total) * 100)));
         } else if (onProgress) {
-            onProgress(Math.min(90, Math.round((received / 5_000_000) * 50)));
+            onProgress(Math.min(90, Math.round((received / 5_000_000) * 60)));
         }
     }
 
     onProgress?.(100);
 
-    // Combine chunks
     const result = new Uint8Array(received);
     let offset = 0;
     for (const chunk of chunks) {
@@ -169,29 +151,17 @@ export async function mergeVideoAudio(
 ): Promise<Blob> {
     const ffmpeg = await loadFFmpeg(onProgress);
 
-    // Download video stream (direct from CDN if YouTube/Twitter)
-    onProgress?.({ phase: "downloading_video", percent: 0, message: "Downloading video stream..." });
+    onProgress?.({ phase: "downloading_video", percent: 0, message: "Downloading video..." });
     const videoData = await fetchWithProgress(videoUrl, "video.mp4", (pct) => {
-        onProgress?.({
-            phase: "downloading_video",
-            percent: pct,
-            message: `Downloading video... ${pct}%`,
-        });
+        onProgress?.({ phase: "downloading_video", percent: pct, message: `Downloading video... ${pct}%` });
     });
 
-    // Download audio stream
-    onProgress?.({ phase: "downloading_audio", percent: 0, message: "Downloading audio stream..." });
+    onProgress?.({ phase: "downloading_audio", percent: 0, message: "Downloading audio..." });
     const audioData = await fetchWithProgress(audioUrl, "audio.m4a", (pct) => {
-        onProgress?.({
-            phase: "downloading_audio",
-            percent: pct,
-            message: `Downloading audio... ${pct}%`,
-        });
+        onProgress?.({ phase: "downloading_audio", percent: pct, message: `Downloading audio... ${pct}%` });
     });
 
-    // Merge in browser via FFmpeg.wasm
     onProgress?.({ phase: "merging", percent: 0, message: "Merging streams..." });
-
     await ffmpeg.writeFile("v_in.mp4", videoData);
     await ffmpeg.writeFile("a_in.m4a", audioData);
 
@@ -208,7 +178,7 @@ export async function mergeVideoAudio(
         await ffmpeg.exec([
             "-i", "v_in.mp4",
             "-i", "a_in.m4a",
-            "-c:v", "copy",         // No re-encode — just remux, very fast
+            "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "192k",
             "-movflags", "+faststart",
@@ -220,8 +190,6 @@ export async function mergeVideoAudio(
     }
 
     const outputData = await ffmpeg.readFile(outputFilename);
-
-    // Free RAM immediately
     try {
         await ffmpeg.deleteFile("v_in.mp4");
         await ffmpeg.deleteFile("a_in.m4a");
@@ -243,11 +211,7 @@ export async function extractAudio(
 
     onProgress?.({ phase: "downloading_audio", percent: 0, message: "Downloading audio..." });
     const audioData = await fetchWithProgress(audioUrl, "audio_src", (pct) => {
-        onProgress?.({
-            phase: "downloading_audio",
-            percent: pct,
-            message: `Downloading audio... ${pct}%`,
-        });
+        onProgress?.({ phase: "downloading_audio", percent: pct, message: `Downloading audio... ${pct}%` });
     });
 
     onProgress?.({ phase: "converting", percent: 0, message: "Converting to MP3..." });
@@ -276,7 +240,6 @@ export async function extractAudio(
     }
 
     const outputData = await ffmpeg.readFile(outputFilename);
-
     try {
         await ffmpeg.deleteFile("audio_src");
         await ffmpeg.deleteFile(outputFilename);
@@ -296,21 +259,15 @@ export async function proxyDownload(
     const data = await fetchWithProgress(cdnUrl, filename, onProgress);
     const ext = filename.split(".").pop()?.toLowerCase() ?? "";
     const mimeMap: Record<string, string> = {
-        mp4: "video/mp4",
-        webm: "video/webm",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        png: "image/png",
-        webp: "image/webp",
-        mp3: "audio/mpeg",
-        m4a: "audio/mp4",
+        mp4: "video/mp4", webm: "video/webm",
+        jpg: "image/jpeg", jpeg: "image/jpeg",
+        png: "image/png", webp: "image/webp",
+        mp3: "audio/mpeg", m4a: "audio/mp4",
     };
-    return new Blob([data as BlobPart], {
-        type: mimeMap[ext] ?? "application/octet-stream",
-    });
+    return new Blob([data as BlobPart], { type: mimeMap[ext] ?? "application/octet-stream" });
 }
 
-// ─── M3U8 / HLS stream download ──────────────────────────────────────────────
+// ─── M3U8 / HLS ──────────────────────────────────────────────────────────────
 
 export function isM3u8Url(url: string): boolean {
     return url.includes(".m3u8") || url.includes("m3u8");
@@ -327,7 +284,6 @@ export async function downloadM3u8Video(
 
     const manifestData = await fetchWithProgress(m3u8Url, "manifest.m3u8");
     const manifestText = new TextDecoder().decode(manifestData);
-
     const lines = manifestText.split("\n").map((l) => l.trim()).filter(Boolean);
     const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
     const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
@@ -340,18 +296,14 @@ export async function downloadM3u8Video(
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].startsWith("#EXT-X-STREAM-INF")) {
                 for (let j = i + 1; j < lines.length; j++) {
-                    if (!lines[j].startsWith("#")) {
-                        variantUrls.push(lines[j]);
-                        break;
-                    }
+                    if (!lines[j].startsWith("#")) { variantUrls.push(lines[j]); break; }
                 }
             }
         }
-        if (variantUrls.length === 0) throw new Error("No streams found in m3u8");
+        if (!variantUrls.length) throw new Error("No streams found in m3u8");
         const best = variantUrls[variantUrls.length - 1];
         mediaPlaylistUrl = best.startsWith("http") ? best : baseUrl + best;
-        const mediaData = await fetchWithProgress(mediaPlaylistUrl, "media.m3u8");
-        mediaManifestText = new TextDecoder().decode(mediaData);
+        mediaManifestText = new TextDecoder().decode(await fetchWithProgress(mediaPlaylistUrl, "media.m3u8"));
     }
 
     const mediaBaseUrl = mediaPlaylistUrl.substring(0, mediaPlaylistUrl.lastIndexOf("/") + 1);
@@ -361,13 +313,12 @@ export async function downloadM3u8Video(
             segmentUrls.push(line.startsWith("http") ? line : mediaBaseUrl + line);
         }
     }
-    if (segmentUrls.length === 0) throw new Error("No segments found in m3u8");
+    if (!segmentUrls.length) throw new Error("No segments found in m3u8");
 
     const segmentFiles: string[] = [];
     for (let i = 0; i < segmentUrls.length; i++) {
         const segFilename = `seg_${i.toString().padStart(4, "0")}.ts`;
-        const segData = await fetchWithProgress(segmentUrls[i], segFilename);
-        await ffmpeg.writeFile(segFilename, segData);
+        await ffmpeg.writeFile(segFilename, await fetchWithProgress(segmentUrls[i], segFilename));
         segmentFiles.push(segFilename);
         onProgress?.({
             phase: "downloading_video",
@@ -376,36 +327,21 @@ export async function downloadM3u8Video(
         });
     }
 
-    const concatList = segmentFiles.map((f) => `file '${f}'`).join("\n");
-    await ffmpeg.writeFile("concat.txt", new TextEncoder().encode(concatList));
+    await ffmpeg.writeFile("concat.txt", new TextEncoder().encode(segmentFiles.map((f) => `file '${f}'`).join("\n")));
 
     onProgress?.({ phase: "merging", percent: 0, message: "Converting to MP4..." });
-
     const progressHandler = ({ progress }: { progress: number }) => {
-        onProgress?.({
-            phase: "merging",
-            percent: Math.round(Math.min(progress, 1) * 100),
-            message: `Converting... ${Math.round(Math.min(progress, 1) * 100)}%`,
-        });
+        onProgress?.({ phase: "merging", percent: Math.round(Math.min(progress, 1) * 100), message: `Converting... ${Math.round(Math.min(progress, 1) * 100)}%` });
     };
     ffmpeg.on("progress", progressHandler);
 
     try {
-        await ffmpeg.exec([
-            "-f", "concat",
-            "-safe", "0",
-            "-i", "concat.txt",
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            outputFilename,
-        ]);
+        await ffmpeg.exec(["-f", "concat", "-safe", "0", "-i", "concat.txt", "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart", outputFilename]);
     } finally {
         ffmpeg.off("progress", progressHandler);
     }
 
     const outputData = await ffmpeg.readFile(outputFilename);
-
     try {
         for (const f of segmentFiles) await ffmpeg.deleteFile(f);
         await ffmpeg.deleteFile("concat.txt");
