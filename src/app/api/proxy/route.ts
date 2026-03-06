@@ -1,5 +1,18 @@
 import { NextRequest } from "next/server";
 
+// Handle CORS preflight (needed for parallel Range-header downloads)
+export async function OPTIONS() {
+    return new Response(null, {
+        status: 204,
+        headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Max-Age": "86400",
+        },
+    });
+}
+
 /**
  * Lightweight CORS proxy for CDN URLs.
  * Streams content directly from CDN to client without buffering to disk.
@@ -42,6 +55,11 @@ function isAllowedUrl(url: string): boolean {
     }
 }
 
+// Also support HEAD so the parallel downloader can probe file sizes
+export async function HEAD(request: NextRequest) {
+    return GET(request);
+}
+
 export async function GET(request: NextRequest) {
     const targetUrl = request.nextUrl.searchParams.get("url");
     if (!targetUrl) {
@@ -56,6 +74,8 @@ export async function GET(request: NextRequest) {
         const headers: Record<string, string> = {
             "User-Agent":
                 "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+            // Accept compressed responses from CDN — reduces transfer size
+            "Accept-Encoding": "identity",
         };
 
         if (targetUrl.includes("googlevideo.com") || targetUrl.includes("youtube.com")) {
@@ -72,7 +92,7 @@ export async function GET(request: NextRequest) {
             headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
         }
 
-        // Forward Range header for resumable downloads (important for mobile)
+        // Forward Range header for resumable/parallel chunk downloads
         const rangeHeader = request.headers.get("Range");
         if (rangeHeader) {
             headers["Range"] = rangeHeader;
@@ -97,9 +117,11 @@ export async function GET(request: NextRequest) {
         const responseHeaders: Record<string, string> = {
             "Content-Type": contentType,
             "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Range",
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition",
             "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
+            // Allow browser to cache CDN content for 5 minutes — avoids redundant requests
+            "Cache-Control": "private, max-age=300",
         };
 
         if (contentLength) {

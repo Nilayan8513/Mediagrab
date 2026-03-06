@@ -539,37 +539,91 @@ export default function Home() {
 
 function triggerDownload(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);
+  const mobile = isMobileDevice();
+  const ios = isIOSDevice();
+
+  if (ios) {
+    // iOS Safari doesn't support the download attribute on blob URLs.
+    // Open blob in a new tab — user can then long-press → "Save to Files".
+    // We also try the anchor approach first in case a future Safari version supports it.
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+
+    // Give Safari a moment, then open in a new tab as fallback
+    setTimeout(() => {
+      // Open in new tab — Safari shows its native download banner for blobs
+      const w = window.open(blobUrl, "_blank");
+      if (!w) {
+        // Popup blocked — try location (will navigate away from app)
+        window.location.href = blobUrl;
+      }
+    }, 500);
+
+    // Don't revoke too early — iOS downloads are slow to start
+    setTimeout(() => {
+      try { document.body.removeChild(a); } catch { /* already removed */ }
+      URL.revokeObjectURL(blobUrl);
+    }, 120000); // 2 minutes
+    return;
+  }
+
   const a = document.createElement("a");
   a.href = blobUrl;
   a.download = filename;
   a.style.display = "none";
   document.body.appendChild(a);
 
-  // Use a timeout for the click — some mobile browsers need a tick
   setTimeout(() => {
     a.click();
-    // Delay cleanup significantly for mobile browsers
-    // iOS Safari and some Android browsers need time to start the download
+    // Mobile browsers need more time to start the download before cleanup
+    const cleanupDelay = mobile ? 60000 : 15000;
     setTimeout(() => {
-      document.body.removeChild(a);
+      try { document.body.removeChild(a); } catch { /* already removed */ }
       URL.revokeObjectURL(blobUrl);
-    }, 10000);
+    }, cleanupDelay);
   }, 100);
 }
 
 /** Stream download directly from proxy — avoids buffering entire file in browser memory */
 function streamDownloadFromProxy(cdnUrl: string, filename: string) {
   const proxyUrl = `/api/proxy?url=${encodeURIComponent(cdnUrl)}&filename=${encodeURIComponent(filename)}`;
+  const ios = isIOSDevice();
+  const mobile = isMobileDevice();
+
+  if (ios) {
+    // iOS Safari: anchor click with download attribute is unreliable.
+    // Use window.open — the proxy sets Content-Disposition: attachment,
+    // so Safari will show its download banner.
+    const w = window.open(proxyUrl, "_blank");
+    if (!w) {
+      // Popup was blocked — fall back to navigating the current page.
+      // The Content-Disposition: attachment header prevents page replacement.
+      window.location.href = proxyUrl;
+    }
+    return;
+  }
+
+  // Android Chrome & other mobile: anchor approach works but needs time
   const a = document.createElement("a");
   a.href = proxyUrl;
   a.download = filename;
+  // Setting target="_blank" helps some Android browsers trigger the save dialog
+  if (mobile) {
+    a.target = "_blank";
+    a.rel = "noopener";
+  }
   a.style.display = "none";
   document.body.appendChild(a);
   setTimeout(() => {
     a.click();
+    const cleanupDelay = mobile ? 30000 : 5000;
     setTimeout(() => {
-      document.body.removeChild(a);
-    }, 5000);
+      try { document.body.removeChild(a); } catch { /* already removed */ }
+    }, cleanupDelay);
   }, 100);
 }
 
@@ -585,4 +639,11 @@ function canStreamThroughProxy(url: string): boolean {
 function isMobileDevice(): boolean {
   if (typeof navigator === "undefined") return false;
   return /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+/** Detect iOS specifically (has the most download quirks) */
+function isIOSDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }

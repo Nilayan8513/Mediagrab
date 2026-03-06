@@ -31,6 +31,11 @@ export type FFmpegProgress = {
 
 // ─── Fetch strategy ───────────────────────────────────────────────────────────
 
+/** Number of parallel chunks for large downloads */
+const PARALLEL_CHUNKS = 4;
+/** Minimum file size to use parallel downloads (5 MB) */
+const PARALLEL_THRESHOLD = 5 * 1024 * 1024;
+
 /** All CDN URLs go through /api/proxy for reliable CORS + correct headers */
 function shouldFetchDirectly(_url: string): boolean {
     // Always proxy — CDN URLs don't reliably serve CORS headers for fetch().
@@ -87,6 +92,29 @@ export async function fetchWithProgress(
 
     console.log(`[fetch] ${direct ? "DIRECT" : "PROXY"} → ${label} (${new URL(url).hostname})`);
 
+    // ── HEAD request to determine file size and Range support ──
+    let totalSize = 0;
+    let supportsRange = false;
+    try {
+        const head = await fetch(fetchUrl, { method: "HEAD" });
+        if (head.ok) {
+            const cl = head.headers.get("Content-Length");
+            totalSize = cl ? parseInt(cl, 10) : 0;
+            supportsRange = head.headers.get("Accept-Ranges") === "bytes";
+        }
+    } catch { /* ignore HEAD errors, fall through to sequential */ }
+
+    // ── Try parallel chunked download for large files ──
+    if (supportsRange && totalSize >= PARALLEL_THRESHOLD) {
+        try {
+            return await parallelChunkDownload(fetchUrl, totalSize, label, onProgress);
+        } catch (err) {
+            console.warn(`[fetch] Parallel download failed for ${label}, falling back to sequential:`, err);
+            // Fall through to sequential download
+        }
+    }
+
+    // ── Sequential download (fallback / small files) ──
     const res = await fetch(fetchUrl, direct ? { mode: "cors" } : {});
 
     if (!res.ok) {
@@ -95,7 +123,7 @@ export async function fetchWithProgress(
     }
 
     const contentLength = res.headers.get("Content-Length");
-    const total = contentLength ? parseInt(contentLength, 10) : 0;
+    const total = contentLength ? parseInt(contentLength, 10) : totalSize;
 
     if (!res.body) {
         onProgress?.(100);
@@ -126,6 +154,69 @@ export async function fetchWithProgress(
         result.set(chunk, offset);
         offset += chunk.length;
     }
+    return result;
+}
+
+/**
+ * Download a file in parallel chunks using Range requests.
+ * Splits the file into PARALLEL_CHUNKS parts and downloads them concurrently,
+ * then stitches them together. This can be 2-4x faster than sequential download.
+ */
+async function parallelChunkDownload(
+    fetchUrl: string,
+    totalSize: number,
+    label: string,
+    onProgress?: (percent: number) => void
+): Promise<Uint8Array> {
+    const chunkSize = Math.ceil(totalSize / PARALLEL_CHUNKS);
+    const received = new Array(PARALLEL_CHUNKS).fill(0);
+    const result = new Uint8Array(totalSize);
+
+    console.log(`[fetch] Parallel download: ${label} — ${PARALLEL_CHUNKS} chunks × ${(chunkSize / 1024 / 1024).toFixed(1)} MB`);
+
+    const reportProgress = () => {
+        const totalReceived = received.reduce((a, b) => a + b, 0);
+        onProgress?.(Math.min(99, Math.round((totalReceived / totalSize) * 100)));
+    };
+
+    const downloadChunk = async (index: number): Promise<void> => {
+        const start = index * chunkSize;
+        const end = Math.min(start + chunkSize - 1, totalSize - 1);
+
+        const res = await fetch(fetchUrl, {
+            headers: { Range: `bytes=${start}-${end}` },
+        });
+
+        if (!res.ok && res.status !== 206) {
+            throw new Error(`Chunk ${index} failed: HTTP ${res.status}`);
+        }
+
+        if (!res.body) {
+            const buf = new Uint8Array(await res.arrayBuffer());
+            result.set(buf, start);
+            received[index] = buf.length;
+            reportProgress();
+            return;
+        }
+
+        const reader = res.body.getReader();
+        let offset = start;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            result.set(value, offset);
+            offset += value.length;
+            received[index] += value.length;
+            reportProgress();
+        }
+    };
+
+    await Promise.all(
+        Array.from({ length: PARALLEL_CHUNKS }, (_, i) => downloadChunk(i))
+    );
+
+    onProgress?.(100);
     return result;
 }
 
