@@ -136,33 +136,34 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       console.error("[instagram] instaloader failed:", lastError);
     }
 
-    // Step 2: yt-dlp — works for video posts (reels, tv) when instaloader is blocked
+    // Step 2: yt-dlp --print mode — works for BOTH photos AND videos
+    // Uses --print thumbnail/title/uploader which exits 0 even for photo-only posts
+    // (never throws "No video formats found")
+    try {
+      const result = await extractInstagramPhotosWithYtdlp(url, platform);
+      if (result.items.length > 0) {
+        console.log(`[instagram] yt-dlp --print OK: ${result.items.length} items`);
+        return result;
+      }
+      lastError = "yt-dlp --print returned 0 items";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "yt-dlp --print failed";
+      console.error("[instagram] yt-dlp --print failed:", msg);
+      if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
+    }
+
+    // Step 3: yt-dlp full JSON — fallback for reels/videos if --print mode fails
     try {
       const result = await analyzeWithYtDlp(url, platform);
       if (result.items.length > 0) {
-        console.log(`[instagram] yt-dlp OK: ${result.items.length} items`);
+        console.log(`[instagram] yt-dlp full OK: ${result.items.length} items`);
         return result;
       }
       lastError = "yt-dlp returned 0 items";
     } catch (err) {
       const msg = err instanceof Error ? err.message : "yt-dlp failed";
       console.error("[instagram] yt-dlp failed:", msg);
-      // Don't override a better lastError; yt-dlp "No video formats found" just means it's a photo
       if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
-    }
-
-    // Step 3: Instagram embed scraper — public endpoint, no auth needed
-    // Works even when Instagram blocks server IPs for API access
-    try {
-      const result = await scrapeInstagramEmbedPhotos(url, platform);
-      if (result.items.length > 0) {
-        console.log(`[instagram] embed scraper OK: ${result.items.length} items`);
-        return result;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "embed scraper failed";
-      console.error("[instagram] embed scraper failed:", msg);
-      lastError = msg;
     }
 
     throw new Error(
@@ -345,18 +346,18 @@ function extractFromInstagramJson(
           duration: (n.video_duration as number) || null,
           formats: isVideo
             ? [{
-                format_id: "best",
-                quality: "Best",
-                ext: "mp4",
-                filesize: null,
-                resolution: null,
-                vcodec: "avc1",
-                acodec: "mp4a",
-                height: null,
-                fps: null,
-                url: mediaUrl,
-                has_audio: true,
-              }]
+              format_id: "best",
+              quality: "Best",
+              ext: "mp4",
+              filesize: null,
+              resolution: null,
+              vcodec: "avc1",
+              acodec: "mp4a",
+              height: null,
+              fps: null,
+              url: mediaUrl,
+              has_audio: true,
+            }]
             : [],
           direct_url: mediaUrl,
           audio_url: null,
@@ -568,6 +569,133 @@ async function analyzeFacebook(url: string): Promise<MediaInfo> {
   }
 
   return result;
+}
+
+// ─── Instagram photo extractor via yt-dlp --print ────────────────────────────
+// Uses yt-dlp's --print mode instead of --dump-single-json.
+// Key advantage: exits with code 0 even for photo-only posts because it just
+// prints metadata fields — never throws "No video formats found".
+// For carousel posts it prints one line per item (multiple thumbnails).
+
+async function extractInstagramPhotosWithYtdlp(
+  url: string,
+  platform: Platform
+): Promise<MediaInfo> {
+  return new Promise((resolve, reject) => {
+    const cookieArgs = getCookieArgs("yt-dlp");
+
+    // Print key fields per media item, separated by a safe delimiter.
+    // For photos: url=NA, duration=NA, thumbnail=CDN image URL
+    // For videos: url=CDN mp4 URL, duration=number (seconds)
+    const DELIM = "\x00MGRAB\x00";
+    const args = [
+      ...cookieArgs,
+      "--no-warnings",
+      "--no-check-certificates",
+      "--force-ipv4",
+      "--user-agent", USER_AGENT,
+      "--extractor-retries", "3",
+      "--socket-timeout", "30",
+      "--print", `%(thumbnail)s${DELIM}%(url)s${DELIM}%(title)s${DELIM}%(uploader)s${DELIM}%(duration)s`,
+      url,
+    ];
+
+    console.log("[instagram-print] Running yt-dlp --print for:", url);
+    const proc = spawn("yt-dlp", args);
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+
+    proc.on("close", (code) => {
+      const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
+      const items: MediaItem[] = [];
+      let uploaderGlobal = "Instagram User";
+      let titleGlobal = "Instagram Post";
+
+      for (let i = 0; i < lines.length; i++) {
+        const parts = lines[i].split(DELIM);
+        const thumbUrl  = (parts[0] || "").trim();
+        const mediaUrl  = (parts[1] || "").trim();
+        const title     = (parts[2] || titleGlobal).trim();
+        const uploader  = (parts[3] || uploaderGlobal).trim();
+        const durStr    = (parts[4] || "NA").trim();
+        const duration  = durStr !== "NA" && !isNaN(Number(durStr)) ? Number(durStr) : null;
+
+        if (i === 0) { uploaderGlobal = uploader; titleGlobal = title; }
+
+        // Decide: real video URL + duration → video item; otherwise → photo item
+        const isRealVideo =
+          mediaUrl && mediaUrl.startsWith("http") &&
+          duration !== null && duration > 0;
+
+        if (isRealVideo) {
+          items.push({
+            type: "video",
+            title,
+            thumbnail: thumbUrl,
+            duration,
+            formats: [{
+              format_id: "best",
+              quality: "Best",
+              ext: "mp4",
+              filesize: null,
+              resolution: null,
+              vcodec: "avc1",
+              acodec: "mp4a",
+              height: null,
+              fps: null,
+              url: mediaUrl,
+              has_audio: true,
+            }],
+            direct_url: null,
+            audio_url: null,
+            index: items.length,
+          });
+        } else if (thumbUrl && thumbUrl.startsWith("http")) {
+          // Photo item — use thumbnail as the downloadable image URL
+          items.push({
+            type: "photo",
+            title,
+            thumbnail: thumbUrl,
+            duration: null,
+            formats: [],
+            direct_url: thumbUrl,
+            audio_url: null,
+            index: items.length,
+          });
+        }
+      }
+
+      if (items.length > 0) {
+        console.log(`[instagram-print] Got ${items.length} item(s) (${items.filter(i => i.type === "photo").length} photos, ${items.filter(i => i.type === "video").length} videos)`);
+        resolve({
+          platform,
+          title: titleGlobal,
+          uploader: uploaderGlobal,
+          items,
+          original_url: url,
+        });
+        return;
+      }
+
+      reject(new Error(
+        stderr
+          ? stderr.split("\n").find(l => l.includes("ERROR"))?.trim() || stderr.slice(0, 200)
+          : `yt-dlp --print returned no output (exit ${code})`
+      ));
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error(`Failed to run yt-dlp: ${err.message}`));
+    });
+
+    setTimeout(() => {
+      proc.kill();
+      reject(new Error("yt-dlp --print timed out"));
+    }, 60000);
+  });
 }
 
 // ─── Analyze with yt-dlp (generic) ───────────────────────────────────────────
