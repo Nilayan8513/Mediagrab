@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
@@ -13,6 +13,7 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
+  // Priority 1: YTDLP_COOKIES env var (base64-encoded Netscape cookies.txt)
   if (process.env.YTDLP_COOKIES) {
     try {
       const tempDir = process.env.TEMP || process.env.TMP || "/tmp";
@@ -21,27 +22,22 @@ function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
         tempCookieFile,
         Buffer.from(process.env.YTDLP_COOKIES, "base64").toString("utf8")
       );
+      console.log("[cookies] Using YTDLP_COOKIES env var");
       return ["--cookies", tempCookieFile];
     } catch (err) {
       console.error("Failed to decode YTDLP_COOKIES env var:", err);
     }
   }
+  // Priority 2: cookies.txt file on disk
   if (existsSync(COOKIES_FILE)) {
+    console.log("[cookies] Using cookies.txt file");
     return ["--cookies", COOKIES_FILE];
   }
-  const browsers = ["firefox", "edge", "brave", "chrome", "chromium", "opera"];
-  for (const browser of browsers) {
-    try {
-      const check = spawnSync(
-        "yt-dlp",
-        ["--cookies-from-browser", browser, "--version"],
-        { timeout: 3000, stdio: "pipe" }
-      );
-      if (check.status === 0) return ["--cookies-from-browser", browser];
-    } catch {
-      continue;
-    }
-  }
+  // NOTE: We intentionally do NOT fall back to --cookies-from-browser.
+  // On headless servers (Render, Docker), `yt-dlp --cookies-from-browser firefox --version`
+  // exits with code 0 (version flag short-circuits), making it look like browser cookies
+  // are available when they're not. This causes yt-dlp to fail with a login error.
+  console.log("[cookies] No cookies available — proceeding without auth");
   return [];
 }
 
@@ -160,7 +156,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       }
     }
 
-    // Fallback to yt-dlp (works for stories with cookies, and as fallback for posts)
+    // Fallback to yt-dlp (works for videos with cookies, and as fallback for posts)
     let ytdlpNoVideoFormats = false;
     try {
       const result = await analyzeWithYtDlp(url, platform);
@@ -170,15 +166,19 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       const ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
       console.error("yt-dlp also failed:", ytdlpError);
       if (!lastError) lastError = ytdlpError;
-      // "No video formats found" means it's a photo-only post — try embed scraper
+
       if (ytdlpError.includes("No video formats found")) {
+        // Photo-only post — let the embed scraper handle it below
         ytdlpNoVideoFormats = true;
-      } else if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
+      } else if (isStory && (ytdlpError.includes("login") || ytdlpError.includes("log in"))) {
+        // Stories genuinely need auth — throw immediately, embed scraper can't help
         throw new Error(
-          `${isStory ? "Instagram Stories require" : "This Instagram post requires"} authentication. ` +
+          "Instagram Stories require authentication. " +
           "Please update your cookies.txt with fresh Instagram cookies."
         );
       }
+      // For regular posts with any other error (including login errors), fall through
+      // to the embed scraper — it works without auth for public posts.
     }
 
     // Final fallback: scrape photos from Instagram's public embed page.
