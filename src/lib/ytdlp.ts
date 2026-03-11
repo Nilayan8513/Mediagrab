@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "child_process";
 import { writeFileSync, mkdirSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
+import { scrapeFacebookPhotos, isFacebookPhotoUrl } from "./facebook-photo";
 import { analyzeTwitterUrl } from "./twitter-scraper";
 import { resolve } from "path";
 
@@ -71,7 +72,7 @@ const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
   },
   {
     platform: "facebook",
-    regex: /(?:facebook\.com\/(?:(?:.*\/)?(?:videos|posts|watch|reel|photo)|reel\/|share\/|watch\/)|fb\.watch\/)/i,
+    regex: /(?:facebook\.com\/(?:(?:.*\/)?(?:videos|posts|watch|reel|photo|photos)|reel\/|share\/|watch\/|photo\.php|permalink\.php|story\.php)|fb\.watch\/|fb\.me\/)/i,
   },
 ];
 
@@ -160,6 +161,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
     }
 
     // Fallback to yt-dlp (works for stories with cookies, and as fallback for posts)
+    let ytdlpNoVideoFormats = false;
     try {
       const result = await analyzeWithYtDlp(url, platform);
       if (result.items.length > 0) return result;
@@ -168,8 +170,10 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       const ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
       console.error("yt-dlp also failed:", ytdlpError);
       if (!lastError) lastError = ytdlpError;
-      // Use yt-dlp error message for auth-related reporting
-      if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
+      // "No video formats found" means it's a photo-only post — try embed scraper
+      if (ytdlpError.includes("No video formats found")) {
+        ytdlpNoVideoFormats = true;
+      } else if (ytdlpError.includes("login") || ytdlpError.includes("log in") || isStory) {
         throw new Error(
           `${isStory ? "Instagram Stories require" : "This Instagram post requires"} authentication. ` +
           "Please update your cookies.txt with fresh Instagram cookies."
@@ -177,8 +181,27 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       }
     }
 
+    // Final fallback: scrape photos from Instagram's public embed page.
+    // This works even when instaloader / yt-dlp are blocked by Instagram's API.
+    if (!isStory) {
+      try {
+        const result = await scrapeInstagramEmbedPhotos(url, platform);
+        if (result.items.length > 0) {
+          console.log(`[analyze] Instagram embed scraper returned ${result.items.length} items`);
+          return result;
+        }
+      } catch (embedErr) {
+        const embedError = embedErr instanceof Error ? embedErr.message : "embed scraper failed";
+        console.error("Instagram embed scraper also failed:", embedError);
+        if (!ytdlpNoVideoFormats) {
+          // Only override lastError if it's a more informative message
+          lastError = embedError || lastError;
+        }
+      }
+    }
+
     throw new Error(
-      `Could not extract media from this Instagram post. It may be private. (${lastError})`
+      `Could not extract media from this Instagram post. It may be private or rate-limited. (${lastError})`
     );
   }
 
@@ -202,6 +225,187 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
   throw new Error(
     "Unsupported platform. We support Instagram, Twitter/X, and Facebook."
   );
+}
+
+// ─── Instagram embed scraper (public, no auth needed) ────────────────────────
+// Fetches https://www.instagram.com/p/{shortcode}/embed/ and parses the HTML
+// to extract photo/video URLs. Works even when Instagram blocks API access.
+
+async function scrapeInstagramEmbedPhotos(
+  url: string,
+  platform: Platform
+): Promise<MediaInfo> {
+  const shortcodeMatch = url.match(/instagram\.com\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+  if (!shortcodeMatch) {
+    throw new Error("Could not extract Instagram shortcode from URL");
+  }
+  const shortcode = shortcodeMatch[1];
+
+  const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
+  console.log(`[instagram-embed] Fetching embed page: ${embedUrl}`);
+
+  const response = await fetch(embedUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Instagram embed returned HTTP ${response.status}`);
+  }
+
+  const html = await response.text();
+  console.log(`[instagram-embed] Got ${html.length} bytes`);
+
+  const items: MediaItem[] = [];
+
+  // ── Strategy 1: Parse window.__additionalDataLoaded / __initialData JSON blobs ──
+  const jsonPatterns = [
+    /window\.__additionalDataLoaded\s*\(\s*[^,]+,\s*([\s\S]+?\})\s*\);/,
+    /window\._sharedData\s*=\s*([\s\S]+?\});\s*<\/script>/,
+    /"gql_data"\s*:\s*([\s\S]+\})/,
+  ];
+
+  for (const pattern of jsonPatterns) {
+    const m = html.match(pattern);
+    if (!m) continue;
+    try {
+      const parsed = JSON.parse(m[1]);
+      const mediaItems = extractFromInstagramJson(parsed, shortcode);
+      if (mediaItems.length > 0) {
+        items.push(...mediaItems);
+        break;
+      }
+    } catch { /* try next pattern */ }
+  }
+
+  // ── Strategy 2: Pull image URLs from embedded <img> tags (og images) ──
+  if (items.length === 0) {
+    const imgPattern = /https:\/\/(?:scontent[^"'\s]+|cdninstagram[^"'\s]+)\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+    const seen = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = imgPattern.exec(html)) !== null) {
+      const imgUrl = m[0].replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+      if (!seen.has(imgUrl)) {
+        seen.add(imgUrl);
+        items.push({
+          type: "photo",
+          title: `Instagram Post ${shortcode}`,
+          thumbnail: imgUrl,
+          duration: null,
+          formats: [],
+          direct_url: imgUrl,
+          audio_url: null,
+          index: items.length,
+        });
+      }
+    }
+  }
+
+  // ── Strategy 3: Try oEmbed (returns thumbnail + title, basic fallback) ──
+  if (items.length === 0) {
+    const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&maxwidth=1080`;
+    try {
+      const oRes = await fetch(oembedUrl, {
+        headers: { "User-Agent": USER_AGENT },
+      });
+      if (oRes.ok) {
+        const oData = await oRes.json() as Record<string, unknown>;
+        const thumbUrl = String(oData.thumbnail_url || "");
+        if (thumbUrl) {
+          items.push({
+            type: "photo",
+            title: String(oData.title || `Instagram Post ${shortcode}`),
+            thumbnail: thumbUrl,
+            duration: null,
+            formats: [],
+            direct_url: thumbUrl,
+            audio_url: null,
+            index: 0,
+          });
+        }
+      }
+    } catch { /* oEmbed failed */ }
+  }
+
+  if (items.length === 0) {
+    throw new Error("Instagram embed scraper found no media");
+  }
+
+  // Deduplicate by direct_url
+  const seenUrls = new Set<string>();
+  const uniqueItems = items.filter((item) => {
+    const key = item.direct_url || item.thumbnail;
+    if (seenUrls.has(key)) return false;
+    seenUrls.add(key);
+    return true;
+  }).map((item, idx) => ({ ...item, index: idx }));
+
+  return {
+    platform,
+    title: `Instagram Post ${shortcode}`,
+    uploader: "Instagram User",
+    items: uniqueItems,
+    original_url: url,
+  };
+}
+
+/** Recursively walk an Instagram JSON blob to find media nodes */
+function extractFromInstagramJson(
+  obj: Record<string, unknown>,
+  shortcode: string
+): MediaItem[] {
+  const items: MediaItem[] = [];
+
+  function walk(node: unknown): void {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    const n = node as Record<string, unknown>;
+
+    // Look for a media node with display_url (photo) or video_url (video)
+    if (n.display_url || n.video_url) {
+      const isVideo = !!n.video_url;
+      const mediaUrl = String(n.video_url || n.display_url || "");
+      const thumb = String(n.display_url || n.thumbnail_src || "");
+      if (mediaUrl) {
+        items.push({
+          type: isVideo ? "video" : "photo",
+          title: `Instagram Post ${shortcode}`,
+          thumbnail: thumb,
+          duration: (n.video_duration as number) || null,
+          formats: isVideo
+            ? [{
+                format_id: "best",
+                quality: "Best",
+                ext: "mp4",
+                filesize: null,
+                resolution: null,
+                vcodec: "avc1",
+                acodec: "mp4a",
+                height: null,
+                fps: null,
+                url: mediaUrl,
+                has_audio: true,
+              }]
+            : [],
+          direct_url: mediaUrl,
+          audio_url: null,
+          index: items.length,
+        });
+      }
+    }
+
+    // Walk children
+    Object.values(n).forEach(walk);
+  }
+
+  walk(obj);
+  return items;
 }
 
 // ─── Twitter yt-dlp fallback (only direct mp4 URLs) ──────────────────────────
@@ -359,6 +563,29 @@ function parseTwitterData(data: Record<string, unknown>, url: string): MediaInfo
 // ─── Facebook: client-side friendly ──────────────────────────────────────────
 
 async function analyzeFacebook(url: string): Promise<MediaInfo> {
+  // For photo-like URLs, try the dedicated photo scraper first.
+  // This handles /share/p/, /photo, /posts (with photos), /permalink.php etc.
+  // Video/reel URLs skip this and go directly to yt-dlp below.
+  if (isFacebookPhotoUrl(url)) {
+    try {
+      const photoResult = await scrapeFacebookPhotos(url);
+      if (photoResult.items.length > 0) {
+        console.log(`[analyze] Facebook photo scraper returned ${photoResult.items.length} photos`);
+        return photoResult;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "photo scraper failed";
+      // If the scraper explicitly says NO_PHOTOS_FOUND, this might be a video post
+      // disguised as a share link — fall through to yt-dlp
+      if (!msg.includes("NO_PHOTOS_FOUND")) {
+        console.error("[analyze] Facebook photo scraper error:", msg);
+      } else {
+        console.log("[analyze] No photos found, falling back to yt-dlp for video");
+      }
+    }
+  }
+
+  // Video/reel path (or photo scraper fallback) — uses yt-dlp unchanged
   const result = await analyzeWithYtDlp(url, "facebook");
 
   // Facebook often returns combined mp4 URLs — no merge needed
