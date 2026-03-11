@@ -615,6 +615,59 @@ async function analyzeWithYtDlp(
           stderr.includes("log in") ||
           stderr.includes("authentication");
 
+        // Special case: yt-dlp may still write JSON to stdout before failing.
+        // This happens for Instagram PHOTO posts — yt-dlp fetches the post data
+        // successfully but then exits non-zero with "No video formats found"
+        // because Instagram photos have no video stream. The JSON in stdout
+        // contains the photo thumbnail URL, which we can use directly.
+        if (stdout.trim().startsWith("{") && stderr.includes("No video formats found")) {
+          try {
+            const data = JSON.parse(stdout);
+            const photoUrl = String(
+              data.thumbnail ||
+              data.display_url ||
+              data.url ||
+              ""
+            );
+            if (photoUrl && photoUrl.startsWith("http")) {
+              console.log(`[yt-dlp] Instagram photo detected via stdout JSON: ${photoUrl.slice(0, 80)}`);
+              const items: MediaItem[] = [];
+              // Handle carousel (entries) or single photo
+              const entries: Record<string, unknown>[] =
+                (data.entries && Array.isArray(data.entries))
+                  ? data.entries
+                  : [data];
+              entries.forEach((entry, idx) => {
+                const imgUrl = String(
+                  entry.thumbnail || entry.display_url || entry.url || ""
+                );
+                if (imgUrl && imgUrl.startsWith("http")) {
+                  items.push({
+                    type: "photo",
+                    title: String(entry.title || data.title || `Instagram Post`),
+                    thumbnail: imgUrl,
+                    duration: null,
+                    formats: [],
+                    direct_url: imgUrl,
+                    audio_url: null,
+                    index: idx,
+                  });
+                }
+              });
+              if (items.length > 0) {
+                resolve({
+                  platform,
+                  title: String(data.title || data.uploader || "Instagram Post"),
+                  uploader: String(data.uploader || data.channel || "Unknown"),
+                  items,
+                  original_url: url,
+                });
+                return;
+              }
+            }
+          } catch { /* fall through to normal error handling */ }
+        }
+
         if (withCookies && !isAuthError) {
           analyzeWithYtDlp(url, platform, false).then(resolve, reject);
           return;
