@@ -60,7 +60,7 @@ export type Platform =
 const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
   {
     platform: "instagram",
-    regex: /(?:instagram\.com\/(?:p|reel|reels|tv|stories)\/)/i,
+    regex: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)/i,
   },
   {
     platform: "twitter",
@@ -119,89 +119,54 @@ export interface MediaInfo {
 export async function analyzeUrl(url: string): Promise<MediaInfo> {
   const platform = detectPlatform(url);
 
-  // ── Instagram ──
+  // ── Instagram posts (p/, reel/, reels/, tv/) ──
   if (platform === "instagram") {
-    const isStory = /instagram\.com\/stories\//i.test(url);
     let lastError = "";
 
-    // For stories, try instaloader first (it handles stories with session cookies)
-    if (isStory) {
-      try {
-        const result = await analyzeWithInstaloader(url, platform);
-        if (result.items.length > 0) {
-          console.log(`[analyze] instaloader returned ${result.items.length} story items`);
-          return result;
-        }
-        lastError = "instaloader returned 0 items for story";
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : "instaloader failed for story";
-        console.error("instaloader failed for story, falling back to yt-dlp:", lastError);
+    // Step 1: instaloader — best option, handles photos + carousels + mixed posts
+    try {
+      const result = await analyzeWithInstaloader(url, platform);
+      if (result.items.length > 0) {
+        console.log(`[instagram] instaloader OK: ${result.items.length} items`);
+        return result;
       }
+      lastError = "instaloader returned 0 items";
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "instaloader failed";
+      console.error("[instagram] instaloader failed:", lastError);
     }
 
-    // For regular posts (not stories), try instaloader FIRST.
-    // instaloader correctly handles mixed carousels (photos + videos),
-    // while yt-dlp only extracts video entries and ignores photos.
-    if (!isStory) {
-      try {
-        const result = await analyzeWithInstaloader(url, platform);
-        if (result.items.length > 0) {
-          console.log(`[analyze] instaloader returned ${result.items.length} items (${result.items.filter(i => i.type === "photo").length} photos, ${result.items.filter(i => i.type === "video").length} videos)`);
-          return result;
-        }
-        lastError = "instaloader returned 0 items";
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : "instaloader failed";
-        console.error("instaloader failed, falling back to yt-dlp:", lastError);
-      }
-    }
-
-    // Fallback to yt-dlp (works for videos with cookies, and as fallback for posts)
-    let ytdlpNoVideoFormats = false;
+    // Step 2: yt-dlp — works for video posts (reels, tv) when instaloader is blocked
     try {
       const result = await analyzeWithYtDlp(url, platform);
-      if (result.items.length > 0) return result;
+      if (result.items.length > 0) {
+        console.log(`[instagram] yt-dlp OK: ${result.items.length} items`);
+        return result;
+      }
       lastError = "yt-dlp returned 0 items";
     } catch (err) {
-      const ytdlpError = err instanceof Error ? err.message : "yt-dlp failed";
-      console.error("yt-dlp also failed:", ytdlpError);
-      if (!lastError) lastError = ytdlpError;
-
-      if (ytdlpError.includes("No video formats found")) {
-        // Photo-only post — let the embed scraper handle it below
-        ytdlpNoVideoFormats = true;
-      } else if (isStory && (ytdlpError.includes("login") || ytdlpError.includes("log in"))) {
-        // Stories genuinely need auth — throw immediately, embed scraper can't help
-        throw new Error(
-          "Instagram Stories require authentication. " +
-          "Please update your cookies.txt with fresh Instagram cookies."
-        );
-      }
-      // For regular posts with any other error (including login errors), fall through
-      // to the embed scraper — it works without auth for public posts.
+      const msg = err instanceof Error ? err.message : "yt-dlp failed";
+      console.error("[instagram] yt-dlp failed:", msg);
+      // Don't override a better lastError; yt-dlp "No video formats found" just means it's a photo
+      if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
     }
 
-    // Final fallback: scrape photos from Instagram's public embed page.
-    // This works even when instaloader / yt-dlp are blocked by Instagram's API.
-    if (!isStory) {
-      try {
-        const result = await scrapeInstagramEmbedPhotos(url, platform);
-        if (result.items.length > 0) {
-          console.log(`[analyze] Instagram embed scraper returned ${result.items.length} items`);
-          return result;
-        }
-      } catch (embedErr) {
-        const embedError = embedErr instanceof Error ? embedErr.message : "embed scraper failed";
-        console.error("Instagram embed scraper also failed:", embedError);
-        if (!ytdlpNoVideoFormats) {
-          // Only override lastError if it's a more informative message
-          lastError = embedError || lastError;
-        }
+    // Step 3: Instagram embed scraper — public endpoint, no auth needed
+    // Works even when Instagram blocks server IPs for API access
+    try {
+      const result = await scrapeInstagramEmbedPhotos(url, platform);
+      if (result.items.length > 0) {
+        console.log(`[instagram] embed scraper OK: ${result.items.length} items`);
+        return result;
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "embed scraper failed";
+      console.error("[instagram] embed scraper failed:", msg);
+      lastError = msg;
     }
 
     throw new Error(
-      `Could not extract media from this Instagram post. It may be private or rate-limited. (${lastError})`
+      `Could not extract media from this Instagram post. It may be private or the URL is incorrect. (${lastError})`
     );
   }
 
