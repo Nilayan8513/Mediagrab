@@ -1,25 +1,16 @@
-<div align="center">
-
 # 🎬 MediaGrab
 
 ### Download videos, reels & photos from your favorite platforms — free & fast.
 
-[![Live Demo](https://img.shields.io/badge/🚀%20Live%20Demo-mediagrab--6i5t.onrender.com-blue?style=for-the-badge)](https://mediagrab-6i5t.onrender.com/)
-[![Next.js](https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
-[![Deployed on Render](https://img.shields.io/badge/Deployed%20on-Render-46E3B7?style=for-the-badge&logo=render)](https://render.com/)
+🌐 **Live Site → [https://mediagrab-6i5t.onrender.com/](https://mediagrab-6i5t.onrender.com/)**
 
----
-
-<img src="https://mediagrab-6i5t.onrender.com/next.svg" width="120" alt="MediaGrab" />
-
-</div>
-
----
-
-## 🌐 Live
-
-**[https://mediagrab-6i5t.onrender.com/](https://mediagrab-6i5t.onrender.com/)**
+[![Next.js](https://img.shields.io/badge/Next.js-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![TailwindCSS](https://img.shields.io/badge/TailwindCSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![Node.js](https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
+[![Render](https://img.shields.io/badge/Deployed_on-Render-46E3B7?style=for-the-badge&logo=render&logoColor=black)](https://render.com/)
 
 ---
 
@@ -27,12 +18,12 @@
 
 - 📸 **Instagram** — Videos, Reels, Photos, Carousels (mixed photo + video posts)
 - 🐦 **Twitter / X** — Videos, GIFs, Photos (multi-media tweets)
-- 📘 **Facebook** — Videos & Reels
+- 📘 **Facebook** — Videos & Reels only *(photo posts not supported — Facebook blocks server-side HTTP requests from cloud IPs like Render, making photo scraping impossible without a residential proxy)*
 - 🎵 **Audio Extraction** — Download MP3 audio from any video
-- 📦 **Download All** — Carousel posts zipped and downloaded in one click
+- 📦 **Download All** — Carousel posts zipped in one click
 - 🔀 **Quality Selector** — Choose resolution before downloading
-- ⚡ **Client-side Processing** — FFmpeg.wasm merges streams in the browser (no server storage)
-- 📱 **Mobile Friendly** — Works on iOS and Android browsers
+- ⚡ **Client-side Processing** — FFmpeg.wasm merges streams in the browser
+- 📱 **Mobile Friendly** — Works on iOS and Android
 - 🌗 **Dark / Light Mode** — Respects system preference
 
 ---
@@ -40,19 +31,19 @@
 ## 🛠️ Tech Stack
 
 ### Frontend
-![Next.js](https://img.shields.io/badge/Next.js-black?style=flat-square&logo=next.js)
-![React](https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![TailwindCSS](https://img.shields.io/badge/TailwindCSS-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-black?style=for-the-badge&logo=next.js&logoColor=white)
+![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![TailwindCSS](https://img.shields.io/badge/TailwindCSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
 
 ### Backend & Processing
-![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat-square&logo=node.js&logoColor=white)
-![yt-dlp](https://img.shields.io/badge/yt--dlp-FF0000?style=flat-square&logo=youtube&logoColor=white)
-![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat-square&logo=ffmpeg&logoColor=white)
-![Instaloader](https://img.shields.io/badge/Instaloader-E1306C?style=flat-square&logo=instagram&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=node.js&logoColor=white)
+![yt-dlp](https://img.shields.io/badge/yt--dlp-FF0000?style=for-the-badge&logo=youtube&logoColor=white)
+![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 
 ### Deployment
-![Render](https://img.shields.io/badge/Render-46E3B7?style=flat-square&logo=render&logoColor=black)
+![Render](https://img.shields.io/badge/Render-46E3B7?style=for-the-badge&logo=render&logoColor=black)
 
 ---
 
@@ -92,21 +83,19 @@ User pastes URL
 
 ```bash
 # Clone the repo
-git clone https://github.com/Nilayan8513/social-media-downloader-backend.git
-cd social-media-downloader-backend
+git clone https://github.com/Nilayan8513/Mediagrab.git
+cd Mediagrab
 
 # Install dependencies
 npm install
-
-# (Optional) Add cookies for authenticated platform downloads
-# Place a Netscape-format cookies.txt in the project root
-# See: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
 
 # Run dev server
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000)
+
+> **Note:** For authenticated downloads (Facebook, private Instagram), add a `cookies.txt` in the project root. See [yt-dlp cookie docs](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp). **Never commit cookies.txt to GitHub.**
 
 ---
 
@@ -116,14 +105,13 @@ Open [http://localhost:3000](http://localhost:3000)
 2. Create a new **Web Service** on [Render](https://render.com/)
 3. Set **Build Command:** `npm install && npm run build`
 4. Set **Start Command:** `npm start`
-5. Add environment variables (optional):
+5. Add environment variables:
 
 | Variable | Description |
 |---|---|
 | `YTDLP_COOKIES` | Base64-encoded `cookies.txt` for authenticated downloads |
 | `INSTA_SESSION` | Base64-encoded instaloader session file |
 
-To encode your cookies file:
 ```bash
 # Linux / Mac
 base64 -w 0 cookies.txt
@@ -160,7 +148,7 @@ src/
     ├── ffmpeg-client.ts   # Client-side FFmpeg (merge, extract, HLS)
     ├── instaloader.ts     # Instagram photo/carousel handler
     ├── twitter-scraper.ts # Twitter Syndication API
-    ├── facebook-scraper.ts
+    ├── facebook-photo
     └── ytdlp.ts           # Core platform routing + yt-dlp wrapper
 ```
 
@@ -176,4 +164,4 @@ MediaGrab is intended for **personal use only**. Always respect content creators
 
 **Nilayan** — CSE Student | Full Stack + ML
 
-[![GitHub](https://img.shields.io/badge/GitHub-Nilayan8513-181717?style=flat-square&logo=github)](https://github.com/Nilayan8513)
+[![GitHub](https://img.shields.io/badge/GitHub-Nilayan8513-181717?style=for-the-badge&logo=github)](https://github.com/Nilayan8513)
