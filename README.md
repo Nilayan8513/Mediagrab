@@ -512,7 +512,7 @@ Contributions, issues, and feature requests are welcome!
 
 ## 👨‍💻 Author
 
-<div align="center">
+<div align="left">
 
 **Nilayan** — CSE Student | Full Stack + ML
 
