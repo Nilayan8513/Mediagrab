@@ -2,7 +2,7 @@
 
 ### Download videos, reels & photos from your favorite platforms — free & fast.
 
-🌐 **Live Site → [https://mediagrab-6i5t.onrender.com/](https://mediagrab-6i5t.onrender.com/)**
+[![Live Site](https://img.shields.io/badge/🌐_Live_Site-mediagrab--6i5t.onrender.com-4263eb?style=for-the-badge)](https://mediagrab-6i5t.onrender.com/)
 
 [![Next.js](https://img.shields.io/badge/Next.js-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
