@@ -1,135 +1,127 @@
 "use client";
-
-import { useState, useRef, type ReactNode } from "react";
+import { useState, useRef, type ReactElement } from "react";
 import { InstagramLogo, XLogo, FacebookLogo } from "./PlatformLogos";
 
 interface UrlInputProps {
-    onAnalyze: (url: string) => void;
-    isLoading: boolean;
-    detectedPlatform: string | null;
+  onAnalyze: (url: string) => void;
+  isLoading: boolean;
+  detectedPlatform: string | null;
 }
 
-const PLATFORM_ICONS: Record<string, { icon: ReactNode; color: string }> = {
-    instagram: { icon: <InstagramLogo size={18} />, color: "#e1306c" },
-    twitter: { icon: <XLogo size={18} />, color: "#000000" },
-    facebook: { icon: <FacebookLogo size={18} />, color: "#1877f2" },
+const PLATFORM_ICONS: Record<string, ReactElement> = {
+  instagram: <InstagramLogo size={18} />,
+  twitter:   <XLogo size={18} />,
+  facebook:  <FacebookLogo size={18} />,
 };
 
 function quickDetectPlatform(url: string): string | null {
-    if (/instagram\.com/i.test(url)) return "instagram";
-    if (/twitter\.com|x\.com/i.test(url)) return "twitter";
-    if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
-    return null;
+  if (/instagram\.com/i.test(url)) return "instagram";
+  if (/twitter\.com|x\.com/i.test(url)) return "twitter";
+  if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
+  return null;
 }
 
 export default function UrlInput({ onAnalyze, isLoading, detectedPlatform }: UrlInputProps) {
-    const [url, setUrl] = useState("");
-    const [localPlatform, setLocalPlatform] = useState<string | null>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
+  const [url, setUrl] = useState("");
+  const [localPlatform, setLocalPlatform] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-    const platform = detectedPlatform || localPlatform;
-    const platformInfo = platform ? PLATFORM_ICONS[platform] : null;
+  const platform = detectedPlatform || localPlatform;
+  const platformIcon = platform ? PLATFORM_ICONS[platform] : null;
 
-    const handleChange = (val: string) => {
-        setUrl(val);
-        setLocalPlatform(quickDetectPlatform(val));
-    };
+  const handleChange = (val: string) => {
+    setUrl(val);
+    setLocalPlatform(quickDetectPlatform(val));
+  };
 
-    const handlePaste = async () => {
-        try {
-            const text = await navigator.clipboard.readText();
-            handleChange(text);
-            inputRef.current?.focus();
-        } catch {
-            /* clipboard access denied */
-        }
-    };
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      handleChange(text);
+      inputRef.current?.focus();
+    } catch { /* clipboard denied */ }
+  };
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (url.trim()) onAnalyze(url.trim());
-    };
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (url.trim()) onAnalyze(url.trim());
+  };
 
-    return (
-        <form onSubmit={handleSubmit} className="w-full">
-            <div className="relative">
-                {/* Platform indicator */}
-                {platformInfo && (
-                    <div
-                        className="absolute left-3.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold z-10 animate-fade-up"
-                        style={{
-                            backgroundColor: `${platformInfo.color}14`,
-                            color: platformInfo.color,
-                        }}
-                    >
-                        {platformInfo.icon}
-                    </div>
-                )}
+  return (
+    <form onSubmit={handleSubmit} style={{ width: "100%" }}>
+      <div className="url-input-wrapper">
+        {platformIcon ? (
+          <div className="url-platform-icon animate-fade-up">{platformIcon}</div>
+        ) : (
+          <span style={{ fontSize: "16px", marginRight: "4px", flexShrink: 0 }}>✦</span>
+        )}
 
-                <input
-                    ref={inputRef}
-                    id="url-input"
-                    type="url"
-                    value={url}
-                    onChange={(e) => handleChange(e.target.value)}
-                    placeholder="Paste a link here..."
-                    className="input-field pr-20"
-                    style={{
-                        paddingLeft: platformInfo ? "50px" : "18px",
-                        transition: "padding-left 0.2s",
-                    }}
-                    disabled={isLoading}
-                    autoComplete="off"
-                    spellCheck={false}
-                />
+        <input
+          ref={inputRef}
+          type="url"
+          value={url}
+          onChange={(e) => handleChange(e.target.value)}
+          placeholder="Paste any social media URL here..."
+          className="url-input-field"
+          disabled={isLoading}
+          autoComplete="off"
+          spellCheck={false}
+        />
 
-                {/* Action buttons */}
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-1.5">
-                    {url && (
-                        <button
-                            type="button"
-                            onClick={() => { setUrl(""); setLocalPlatform(null); }}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors text-xs"
-                            style={{ color: "var(--text-muted)" }}
-                            aria-label="Clear"
-                        >
-                            ✕
-                        </button>
-                    )}
-                    {!url && (
-                        <button
-                            type="button"
-                            onClick={handlePaste}
-                            className="px-3 h-7 rounded-lg flex items-center justify-center text-xs font-medium transition-colors"
-                            style={{ color: "var(--accent)" }}
-                        >
-                            Paste
-                        </button>
-                    )}
-                </div>
-            </div>
-
+        <div className="url-input-actions">
+          {url && !isLoading && (
             <button
-                type="submit"
-                disabled={!url.trim() || isLoading}
-                className="btn-primary w-full mt-3 flex items-center justify-center gap-2"
-                id="analyze-button"
+              type="button"
+              className="url-icon-btn"
+              onClick={() => { setUrl(""); setLocalPlatform(null); }}
+              aria-label="Clear URL"
             >
-                {isLoading ? (
-                    <>
-                        <span className="spinner" />
-                        Analyzing...
-                    </>
-                ) : (
-                    <>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="11" cy="11" r="8" />
-                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                        </svg>
-                        Analyze
-                    </>
-                )}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
             </button>
-        </form>
-    );
+          )}
+
+          {!url && !isLoading && (
+            <button
+              type="button"
+              className="url-icon-btn"
+              onClick={handlePaste}
+              aria-label="Paste from clipboard"
+              title="Paste"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="2" width="6" height="4" rx="1"/>
+                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              </svg>
+            </button>
+          )}
+
+          <button
+            type="submit"
+            className="url-preview-btn"
+            disabled={!url.trim() || isLoading}
+            aria-label="Analyze URL"
+          >
+            {isLoading ? (
+              <>
+                <span className="spinner" />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                Preview
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </form>
+  );
 }

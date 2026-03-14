@@ -20,75 +20,6 @@ interface DownloadButtonProps {
     videoCount?: number;
 }
 
-function ActionButton({
-    onClick,
-    disabled,
-    isActive,
-    progress,
-    status,
-    label,
-    icon,
-}: {
-    onClick: () => void;
-    disabled: boolean;
-    isActive: boolean;
-    progress: number | null;
-    status: Status;
-    label: string;
-    icon: React.ReactNode;
-}) {
-    return (
-        <button
-            onClick={onClick}
-            disabled={disabled || isActive}
-            className="btn-primary w-full flex items-center justify-center gap-2 relative overflow-hidden"
-        >
-            {isActive && progress !== null && (
-                <div
-                    className="absolute inset-0 transition-all duration-300"
-                    style={{ width: `${progress}%`, background: "rgba(255,255,255,0.15)" }}
-                />
-            )}
-            <span className="relative z-10 flex items-center gap-2">
-                {status === "idle" && (
-                    <>
-                        {icon}
-                        {label}
-                    </>
-                )}
-                {status === "downloading" && (
-                    <>
-                        <span className="spinner" />
-                        Downloading {progress !== null ? `${progress.toFixed(0)}%` : "..."}
-                    </>
-                )}
-                {status === "merging" && (
-                    <>
-                        <span className="spinner" />
-                        Processing...
-                    </>
-                )}
-                {status === "complete" && (
-                    <>
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                        Done!
-                    </>
-                )}
-                {status === "error" && (
-                    <>
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                        Failed — Retry
-                    </>
-                )}
-            </span>
-        </button>
-    );
-}
-
 const DownloadIcon = (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -104,15 +35,57 @@ const AudioIcon = (
     </svg>
 );
 
+function ActionButton({
+    onClick,
+    disabled,
+    isActive,
+    progress,
+    status,
+    label,
+    icon,
+    variant = "primary",
+}: {
+    onClick: () => void;
+    disabled: boolean;
+    isActive: boolean;
+    progress: number | null;
+    status: Status;
+    label: string;
+    icon: React.ReactNode;
+    variant?: "primary" | "audio" | "zip";
+}) {
+    const cls = variant === "primary" ? "dl-btn-primary"
+              : variant === "audio"   ? "dl-btn-audio"
+              :                         "dl-btn-zip";
+
+    return (
+        <button onClick={onClick} disabled={disabled || isActive} className={cls}>
+            {variant === "primary" && isActive && progress !== null && (
+                <div
+                    className="dl-btn-progress-overlay"
+                    style={{ width: `${progress}%` }}
+                />
+            )}
+            <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: "8px" }}>
+                {status === "idle" && <>{icon}{label}</>}
+                {status === "downloading" && <><span className="spinner" />Downloading {progress !== null ? `${Math.round(progress)}%` : "…"}</>}
+                {status === "merging" && <><span className="spinner" />Processing…</>}
+                {status === "complete" && <>✓ Done!</>}
+                {status === "error" && <>✕ Failed — Retry</>}
+            </span>
+        </button>
+    );
+}
+
 function ProgressBar({ progress, speed, eta, status }: { progress: number; speed?: string; eta?: string; status: Status }) {
     return (
-        <div className="space-y-1.5">
+        <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
             <div className="progress-track">
                 <div className="progress-fill" style={{ width: `${Math.max(progress, 2)}%` }} />
             </div>
-            <div className="flex justify-between text-xs" style={{ color: "var(--text-muted)" }}>
-                <span>{status === "merging" ? "Processing..." : (speed || "Calculating...")}</span>
-                <span>{eta ? `ETA: ${eta}` : ""}</span>
+            <div className="progress-meta">
+                <span>{status === "merging" ? "Processing…" : (speed || "Calculating…")}</span>
+                <span>{eta ? `ETA ${eta}` : ""}</span>
             </div>
         </div>
     );
@@ -140,8 +113,8 @@ export default function DownloadButton({
     const anyActive = isVideoActive || isAudioActive;
 
     return (
-        <div className="animate-fade-up w-full space-y-2.5" id="download-section">
-            {/* Video download button */}
+        <div className="animate-fade-up" style={{ width: "100%", display: "flex", flexDirection: "column", gap: "10px" }} id="download-section">
+            {/* Primary download button */}
             <ActionButton
                 onClick={onClick}
                 disabled={!!disabled || anyActive}
@@ -150,6 +123,7 @@ export default function DownloadButton({
                 status={status}
                 label={itemType === "photo" ? "Download Photo" : isCarousel ? "Download This Item" : "Download Video"}
                 icon={DownloadIcon}
+                variant="primary"
             />
 
             {/* Video progress bar */}
@@ -157,7 +131,7 @@ export default function DownloadButton({
                 <ProgressBar progress={progress} speed={speed} eta={eta} status={status} />
             )}
 
-            {/* Audio download button — same style as video */}
+            {/* Audio download button */}
             {isVideo && onAudio && (
                 <ActionButton
                     onClick={onAudio}
@@ -167,6 +141,7 @@ export default function DownloadButton({
                     status={audioStatus}
                     label="Download Audio (MP3)"
                     icon={AudioIcon}
+                    variant="audio"
                 />
             )}
 
@@ -182,15 +157,16 @@ export default function DownloadButton({
                 if (videoCount > 0) parts.push(`${videoCount} Video${videoCount > 1 ? "s" : ""}`);
                 const summary = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
                 return (
-                    <button
+                    <ActionButton
                         onClick={onDownloadAll}
                         disabled={!!disabled || anyActive}
-                        className="btn-primary w-full flex items-center justify-center gap-2"
-                        style={{ background: "rgba(34, 197, 94, 0.85)" }}
-                    >
-                        {DownloadIcon}
-                        Download All{summary} (ZIP)
-                    </button>
+                        isActive={false}
+                        progress={null}
+                        status="idle"
+                        label={`Download All${summary} (ZIP)`}
+                        icon={DownloadIcon}
+                        variant="zip"
+                    />
                 );
             })()}
         </div>

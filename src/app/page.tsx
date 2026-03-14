@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import JSZip from "jszip";
 import UrlInput from "@/components/UrlInput";
 import PreviewCard from "@/components/PreviewCard";
@@ -125,6 +125,20 @@ export default function Home() {
   const [downloadEta, setDownloadEta] = useState("");
   const [audioStatus, setAudioStatus] = useState<DownloadStatus>("idle");
   const [audioProgress, setAudioProgress] = useState<number | null>(null);
+
+  // ─── Theme ────────────────────────────────────────────────────────────────────
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setTheme(prefersDark ? 'dark' : 'light');
+    }
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(t => t === 'dark' ? 'light' : 'dark');
+  }, []);
 
   const activeItem = mediaInfo?.items[activeItemIndex] || null;
   const isCarousel = (mediaInfo?.items.length || 0) > 1;
@@ -406,115 +420,186 @@ export default function Home() {
 
   const mobile = isMobile();
 
-  const platforms = [
-    { name: "Instagram", key: "instagram" },
-    { name: "Twitter / X", key: "twitter" },
-    { name: "Facebook", key: "facebook" },
-  ];
-
   return (
-    <div className="min-h-screen flex flex-col">
-      <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-10 sm:py-16">
+    <div className="page-root" data-theme={theme}>
 
-        <div className="flex items-center justify-center gap-3 mb-8">
-          {platforms.map(p => (
-            <div key={p.key} className="card-sm w-10 h-10 flex items-center justify-center cursor-default" title={p.name}>
-              <PlatformLogo platform={p.key} size={22} />
-            </div>
-          ))}
+      {/* Ambient glows */}
+      <div className="glow-layer" aria-hidden="true">
+        <div className="glow glow-purple" />
+        <div className="glow glow-blue" />
+      </div>
+
+      {/* ── Navbar ── */}
+      <nav className="navbar">
+        <div className="navbar-logo">
+          <svg
+            className="navbar-logo-icon"
+            width="20" height="20" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2.2"
+            strokeLinecap="round" strokeLinejoin="round"
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          <span>MediaGrab</span>
         </div>
+        <div className="navbar-actions">
+          <button
+            className="nav-icon-btn"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          >
+            {theme === 'dark' ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"/>
+                <line x1="12" y1="1" x2="12" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+              </svg>
+            )}
+          </button>
+        </div>
+      </nav>
 
-        <div className="text-center mb-8 max-w-md">
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2" style={{ color: "var(--text-primary)" }}>
-            Media<span style={{ color: "var(--accent)" }}>Grab</span>
+      {/* ── Hero ── */}
+      <main className="hero">
+        <div className="hero-content">
+
+          <h1 className="hero-title">
+            <span className="sparkle" aria-hidden="true">✦</span>
+            Save from{" "}
+            <span className="gradient-text">Any Platform</span>
+            <span className="sparkle" aria-hidden="true">✦</span>
           </h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "15px", lineHeight: "1.6" }}>
-            Download videos, photos and reels from your favorite platforms.
+
+          <p className="hero-sub">
+            Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.
+            <br />
+            <span className="hero-highlight">Free, fast, and instant.</span>
           </p>
-        </div>
 
-        <div className="card w-full max-w-lg p-6 sm:p-8 space-y-5">
-          <UrlInput
-            onAnalyze={handleAnalyze}
-            isLoading={isAnalyzing}
-            detectedPlatform={mediaInfo?.platform || null}
-          />
+          <div className="feature-badges">
+            <span className="feature-badge">🔒 Secure</span>
+            <span className="feature-badge">⚡ Fast</span>
+            <span className="feature-badge">🤍 Free</span>
+          </div>
 
+          {/* URL Input */}
+          <div className="input-section">
+            <UrlInput
+              onAnalyze={handleAnalyze}
+              isLoading={isAnalyzing}
+              detectedPlatform={mediaInfo?.platform || null}
+            />
+          </div>
+
+          {/* Error */}
           {error && (
-            <div className="animate-fade-up flex items-start gap-2.5 px-4 py-3 text-sm"
-              style={{ background: "var(--error-bg)", color: "var(--error)", borderRadius: "12px" }}>
-              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
-              <span>{error}</span>
-            </div>
-          )}
-
-          {mediaInfo && (
-            <PreviewCard
-              platform={mediaInfo.platform}
-              title={mediaInfo.title}
-              uploader={mediaInfo.uploader}
-              items={mediaInfo.items}
-              activeIndex={activeItemIndex}
-              onSelectItem={handleSelectItem}
-            />
-          )}
-
-          {activeItem?.type === "video" && activeItem.formats.length > 0 && (
-            <QualitySelector
-              formats={activeItem.formats}
-              selectedFormat={selectedFormat}
-              onSelect={id => { setSelectedFormat(id); setDownloadStatus("idle"); setDownloadProgress(null); }}
-              disabled={downloadStatus === "downloading" || downloadStatus === "merging"}
-            />
-          )}
-
-          {needsBrowserMerge && downloadStatus === "idle" && (
-            <div className="animate-fade-up flex items-start gap-2.5 px-4 py-3 text-sm"
-              style={{ background: "rgba(99,102,241,0.08)", color: "#818cf8", borderRadius: "12px", border: "1px solid rgba(99,102,241,0.15)" }}>
-              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
-              </svg>
-              <span>
-                <strong>{selectedFormatObj?.quality}</strong> merges video + audio in your browser
-                {mobile ? " — may be slow on mobile." : "."}
-              </span>
-            </div>
-          )}
-
-          {mediaInfo && activeItem && (
-            <DownloadButton
-              onClick={handleDownloadItem}
-              onAudio={activeItem.type === "video" ? handleDownloadAudio : undefined}
-              onDownloadAll={isCarousel ? handleDownloadAll : undefined}
-              progress={downloadProgress}
-              status={downloadStatus}
-              audioProgress={audioProgress}
-              audioStatus={audioStatus}
-              speed={downloadSpeed}
-              eta={downloadEta}
-              disabled={!mediaInfo}
-              itemType={activeItem.type}
-              isCarousel={isCarousel}
-              isVideo={activeItem.type === "video"}
-              photoCount={mediaInfo.items.filter(i => i.type === "photo").length}
-              videoCount={mediaInfo.items.filter(i => i.type === "video").length}
-            />
-          )}
-
-          {mobile && downloadStatus === "complete" && (
-            <p className="text-xs text-center animate-fade-up" style={{ color: "var(--text-muted)" }}>
-              📱 iOS: tap <strong>Share → Save to Files</strong> in the new tab.
-              Android: check your <strong>Downloads</strong> folder.
+            <p className="error-text animate-fade-up">
+              <span className="error-dot" aria-hidden="true" />
+              {error}
             </p>
           )}
+
+          {/* Supported platforms — shown only before any URL is analysed */}
+          {!mediaInfo && (
+            <div className="supported-strip animate-fade-up">
+              <span className="supported-label">🌐 Supported:</span>
+              {[
+                { key: "instagram", name: "Instagram" },
+                { key: "twitter",   name: "X / Twitter" },
+                { key: "facebook",  name: "Facebook" },
+              ].map((p) => (
+                <span key={p.key} className="platform-pill">
+                  <PlatformLogo platform={p.key} size={13} />
+                  {p.name}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* ── Results ── */}
+          {mediaInfo && (
+            <div className="results-area animate-fade-up">
+
+              <PreviewCard
+                platform={mediaInfo.platform}
+                title={mediaInfo.title}
+                uploader={mediaInfo.uploader}
+                items={mediaInfo.items}
+                activeIndex={activeItemIndex}
+                onSelectItem={handleSelectItem}
+              />
+
+              {activeItem?.type === "video" && activeItem.formats.length > 0 && (
+                <QualitySelector
+                  formats={activeItem.formats}
+                  selectedFormat={selectedFormat}
+                  onSelect={(id) => {
+                    setSelectedFormat(id);
+                    setDownloadStatus("idle");
+                    setDownloadProgress(null);
+                  }}
+                  disabled={downloadStatus === "downloading" || downloadStatus === "merging"}
+                />
+              )}
+
+              {needsBrowserMerge && downloadStatus === "idle" && (
+                <div className="merge-notice animate-fade-up">
+                  ⚡ <strong>{selectedFormatObj?.quality}</strong> merges video + audio in your browser
+                  {mobile ? " — may be slow on mobile." : "."}
+                </div>
+              )}
+
+              <DownloadButton
+                onClick={handleDownloadItem}
+                onAudio={activeItem?.type === "video" ? handleDownloadAudio : undefined}
+                onDownloadAll={isCarousel ? handleDownloadAll : undefined}
+                progress={downloadProgress}
+                status={downloadStatus}
+                audioProgress={audioProgress}
+                audioStatus={audioStatus}
+                speed={downloadSpeed}
+                eta={downloadEta}
+                disabled={!mediaInfo}
+                itemType={activeItem?.type}
+                isCarousel={isCarousel}
+                isVideo={activeItem?.type === "video"}
+                photoCount={mediaInfo.items.filter((i) => i.type === "photo").length}
+                videoCount={mediaInfo.items.filter((i) => i.type === "video").length}
+              />
+
+              {mobile && downloadStatus === "complete" && (
+                <p className="mobile-tip">
+                  📱 iOS: tap <strong>Share → Save to Files</strong> in the new tab.
+                  Android: check your <strong>Downloads</strong> folder.
+                </p>
+              )}
+
+            </div>
+          )}
+
         </div>
       </main>
 
-      <footer className="text-center py-6" style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-        <p>MediaGrab — For personal use only. Respect content creators&apos; rights.</p>
+      {/* ── Footer ── */}
+      <footer className="site-footer">
+        MediaGrab · Personal use only · Respect content creators
       </footer>
+
     </div>
   );
 }

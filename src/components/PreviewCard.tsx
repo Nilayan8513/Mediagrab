@@ -44,7 +44,7 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
     const activeItem = items[activeIndex] || items[0];
 
     return (
-        <div className="animate-fade-up" id="preview-card" style={{ borderTop: "1px solid var(--border-default)", paddingTop: "20px" }}>
+        <div className="preview-glass-card animate-fade-up" id="preview-card">
             {/* Main preview */}
             <div className="flex flex-col sm:flex-row gap-4">
                 {/* Thumbnail */}
@@ -67,7 +67,7 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
 
                     {/* Duration */}
                     {activeItem?.duration && activeItem.type === "video" && (
-                        <div className="absolute bottom-2 right-2 bg-black/75 px-1.5 py-0.5 rounded text-[11px] font-mono text-white">
+                        <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded text-[11px] font-mono text-white" style={{ background: "rgba(0,0,0,0.7)" }}>
                             {formatDuration(activeItem.duration)}
                         </div>
                     )}
@@ -76,7 +76,7 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
                     <div
                         className="absolute top-2 left-2 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase text-white tracking-wide"
                         style={{
-                            background: activeItem?.type === "photo" ? "#a855f7" : "var(--accent)",
+                            background: activeItem?.type === "photo" ? "rgba(139,92,246,0.7)" : "linear-gradient(135deg,#8B5CF6,#3B82F6)",
                         }}
                     >
                         {activeItem?.type === "photo" ? "Photo" : "Video"}
@@ -176,11 +176,10 @@ export default function PreviewCard({ platform, title, uploader, items, activeIn
                                     {item.type === "photo" ? "📷" : "🎬"}
                                 </div>
                             )}
-                            {/* Type indicator on each thumbnail */}
                             <div
                                 className="absolute bottom-0 right-0 px-1 py-px rounded-tl text-[8px] font-bold uppercase text-white leading-none"
                                 style={{
-                                    background: item.type === "photo" ? "#a855f7" : "var(--accent)",
+                                    background: item.type === "photo" ? "rgba(139,92,246,0.7)" : "linear-gradient(135deg,#8B5CF6,#3B82F6)",
                                     fontSize: "7px",
                                     letterSpacing: "0.03em",
                                 }}

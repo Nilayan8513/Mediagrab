@@ -25,24 +25,37 @@ export default function QualitySelector({ formats, selectedFormat, onSelect, dis
 
     return (
         <div className="animate-fade-up" id="quality-selector">
-            <label className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>
-                Quality
-            </label>
-            <select
-                className="select-field w-full"
-                value={selectedFormat}
-                onChange={(e) => onSelect(e.target.value)}
-                disabled={disabled}
-            >
-                {formats.map((f) => (
-                    <option key={f.format_id} value={f.format_id}>
-                        {f.has_audio ? "🔊 " : "📹 "}{f.quality} • {f.ext.toUpperCase()}
-                        {f.filesize ? ` • ~${formatSize(f.filesize)}` : ""}
-                        {f.has_audio === false ? " (video only)" : ""}
-                    </option>
-                ))}
-            </select>
+            <p className="quality-label">Quality</p>
+            {formats.length <= 5 ? (
+                <div className="quality-pills">
+                    {formats.map((f) => (
+                        <button
+                            key={f.format_id}
+                            type="button"
+                            className={`quality-pill${selectedFormat === f.format_id ? " active" : ""}`}
+                            onClick={() => onSelect(f.format_id)}
+                            disabled={disabled}
+                            title={f.filesize ? `~${formatSize(f.filesize)}` : undefined}
+                        >
+                            {f.has_audio ? "🔊 " : "📹 "}{f.quality}
+                        </button>
+                    ))}
+                </div>
+            ) : (
+                <select
+                    className="quality-select"
+                    value={selectedFormat}
+                    onChange={(e) => onSelect(e.target.value)}
+                    disabled={disabled}
+                >
+                    {formats.map((f) => (
+                        <option key={f.format_id} value={f.format_id}>
+                            {f.has_audio ? "🔊 " : "📹 "}{f.quality} · {f.ext.toUpperCase()}
+                            {f.filesize ? ` · ~${formatSize(f.filesize)}` : ""}
+                        </option>
+                    ))}
+                </select>
+            )}
         </div>
     );
 }
-

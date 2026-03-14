@@ -1,41 +1,29 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Sora } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const sora = Sora({
+  variable: "--font-sora",
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
 export const metadata: Metadata = {
-  title: "MediaGrab — Social Media Downloader",
+  title: "MediaGrab — Download from Any Platform",
   description:
-    "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook in the highest quality. Free and fast.",
-  keywords: [
-    "social media downloader",
-    "instagram downloader",
-    "twitter downloader",
-    "facebook downloader",
-    "video downloader",
-    "reel downloader",
-  ],
+    "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook. Free, fast, and private.",
+  keywords: ["social media downloader", "instagram downloader", "twitter downloader", "facebook downloader"],
   openGraph: {
-    title: "MediaGrab — Social Media Downloader",
-    description:
-      "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.",
+    title: "MediaGrab — Download from Any Platform",
+    description: "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.",
     type: "website",
   },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} antialiased`}>
+      <body className={`${sora.variable} antialiased`}>
         {children}
       </body>
     </html>
