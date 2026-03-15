@@ -29,7 +29,7 @@
 
 <br />
 
-[![Live Site](https://img.shields.io/badge/🌐_Live_Site-https://mediagrab-production.up.railway.app/-4263eb?style=for-the-badge)](https://mediagrab-6i5t.onrender.com/)
+[![Live Site](https://img.shields.io/badge/🌐_Live_Site-mediagrab-production.up.railway.app-4263eb?style=for-the-badge)](https://mediagrab-production.up.railway.app/)
 
 <br />
 
