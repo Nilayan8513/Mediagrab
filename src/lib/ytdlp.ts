@@ -323,29 +323,41 @@ async function scrapeInstagramEmbedPhotos(
 
   const items: MediaItem[] = [];
 
-  // ── Strategy 1: Instagram oEmbed API (most reliable from datacenter IPs) ──
+  // ── Strategy 1: Instagram private API with cookies ──
+  // This is the BEST method for datacenter IPs (Render, AWS, etc.) because it:
+  // - Returns ALL carousel items (not just 1 thumbnail like oEmbed)
+  // - Properly detects videos vs photos
+  // - Uses the mobile API endpoint, which is less likely to be blocked
+  // Requires YTDLP_COOKIES env var or cookies.txt with a valid sessionid.
   try {
-    const oembedUrl = `https://api.instagram.com/oembed/?url=https://www.instagram.com/p/${shortcode}/&maxwidth=1080`;
-    console.log(`[instagram-embed] Strategy 1: oEmbed API`);
-    const oRes = await fetch(oembedUrl, { headers: { "User-Agent": USER_AGENT } });
-    if (oRes.ok) {
-      const oData = await oRes.json() as Record<string, unknown>;
-      const thumbUrl = String(oData.thumbnail_url || "");
-      if (thumbUrl && thumbUrl.startsWith("http")) {
-        const hiResUrl = thumbUrl.replace(/\/s\d+x\d+\//, "/s1080x1080/");
-        items.push({
-          type: "photo",
-          title: String(oData.title || `Instagram Post ${shortcode}`),
-          thumbnail: hiResUrl, duration: null, formats: [],
-          direct_url: hiResUrl, audio_url: null, index: 0,
-        });
-        console.log(`[instagram-embed] oEmbed OK`);
+    const cookieHeader = getInstagramCookieHeader();
+    if (cookieHeader) {
+      const mediaId = shortcodeToMediaId(shortcode);
+      const apiUrl = `https://i.instagram.com/api/v1/media/${mediaId}/info/`;
+      console.log(`[instagram-embed] Strategy 1: private API (media_id=${mediaId})`);
+      const apiRes = await fetch(apiUrl, {
+        headers: {
+          "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 458229234)",
+          "X-IG-App-ID": "936619743392459",
+          "X-IG-WWW-Claim": "0",
+          "Origin": "https://www.instagram.com",
+          "Referer": "https://www.instagram.com/",
+          "Cookie": cookieHeader,
+        },
+      });
+      if (apiRes.ok) {
+        const apiData = await apiRes.json() as Record<string, unknown>;
+        const apiItems = parseInstagramApiResponse(apiData, shortcode);
+        if (apiItems.length > 0) {
+          items.push(...apiItems);
+          console.log(`[instagram-embed] Private API OK: ${apiItems.length} items`);
+        }
+      } else {
+        console.log(`[instagram-embed] Private API returned HTTP ${apiRes.status}`);
       }
-    } else {
-      console.log(`[instagram-embed] oEmbed returned HTTP ${oRes.status}`);
     }
   } catch (err) {
-    console.error("[instagram-embed] oEmbed failed:", err instanceof Error ? err.message : err);
+    console.error("[instagram-embed] Private API failed:", err instanceof Error ? err.message : err);
   }
 
   // ── Strategy 2: /media/?size=l redirect (legacy endpoint) ──
@@ -371,37 +383,32 @@ async function scrapeInstagramEmbedPhotos(
     }
   }
 
-  // ── Strategy 3: Instagram private API with cookies ──
+  // ── Strategy 3: Instagram oEmbed API (returns only 1 thumbnail) ──
+  // NOTE: oEmbed CANNOT return carousel items or video URLs. It only
+  // returns a single thumbnail. Used as a fallback when everything else fails.
   if (items.length === 0) {
     try {
-      const cookieHeader = getInstagramCookieHeader();
-      if (cookieHeader) {
-        const mediaId = shortcodeToMediaId(shortcode);
-        const apiUrl = `https://i.instagram.com/api/v1/media/${mediaId}/info/`;
-        console.log(`[instagram-embed] Strategy 3: private API (media_id=${mediaId})`);
-        const apiRes = await fetch(apiUrl, {
-          headers: {
-            "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 458229234)",
-            "X-IG-App-ID": "936619743392459",
-            "X-IG-WWW-Claim": "0",
-            "Origin": "https://www.instagram.com",
-            "Referer": "https://www.instagram.com/",
-            "Cookie": cookieHeader,
-          },
-        });
-        if (apiRes.ok) {
-          const apiData = await apiRes.json() as Record<string, unknown>;
-          const apiItems = parseInstagramApiResponse(apiData, shortcode);
-          if (apiItems.length > 0) {
-            items.push(...apiItems);
-            console.log(`[instagram-embed] Private API OK: ${apiItems.length} items`);
-          }
-        } else {
-          console.log(`[instagram-embed] Private API returned HTTP ${apiRes.status}`);
+      const oembedUrl = `https://api.instagram.com/oembed/?url=https://www.instagram.com/p/${shortcode}/&maxwidth=1080`;
+      console.log(`[instagram-embed] Strategy 3: oEmbed API`);
+      const oRes = await fetch(oembedUrl, { headers: { "User-Agent": USER_AGENT } });
+      if (oRes.ok) {
+        const oData = await oRes.json() as Record<string, unknown>;
+        const thumbUrl = String(oData.thumbnail_url || "");
+        if (thumbUrl && thumbUrl.startsWith("http")) {
+          const hiResUrl = thumbUrl.replace(/\/s\d+x\d+\//, "/s1080x1080/");
+          items.push({
+            type: "photo",
+            title: String(oData.title || `Instagram Post ${shortcode}`),
+            thumbnail: hiResUrl, duration: null, formats: [],
+            direct_url: hiResUrl, audio_url: null, index: 0,
+          });
+          console.log(`[instagram-embed] oEmbed OK`);
         }
+      } else {
+        console.log(`[instagram-embed] oEmbed returned HTTP ${oRes.status}`);
       }
     } catch (err) {
-      console.error("[instagram-embed] Private API failed:", err instanceof Error ? err.message : err);
+      console.error("[instagram-embed] oEmbed failed:", err instanceof Error ? err.message : err);
     }
   }
 
