@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { writeFileSync, mkdirSync, existsSync, readdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { analyzeWithInstaloader } from "./instaloader";
 import { scrapeFacebookPhotos, isFacebookPhotoUrl } from "./facebook-photo";
@@ -10,7 +10,7 @@ import { resolve } from "path";
 
 const COOKIES_FILE = resolve(process.cwd(), "cookies.txt");
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 function getCookieArgs(_tool: "yt-dlp" | "gallery-dl"): string[] {
   // Priority 1: YTDLP_COOKIES env var (base64-encoded Netscape cookies.txt)
@@ -136,7 +136,23 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       console.error("[instagram] instaloader failed:", lastError);
     }
 
-    // Step 2: yt-dlp --print mode — works for BOTH photos AND videos
+    // Step 2: Instagram embed scraper — uses public /embed/ endpoint, NO GraphQL,
+    // no auth needed. Works even when Instagram blocks API/GraphQL access from
+    // datacenter IPs. 
+    try {
+      const result = await scrapeInstagramEmbedPhotos(url, platform);
+      if (result.items.length > 0) {
+        console.log(`[instagram] embed scraper OK: ${result.items.length} items`);
+        return result;
+      }
+      lastError = "embed scraper returned 0 items";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "embed scraper failed";
+      console.error("[instagram] embed scraper failed:", msg);
+      if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
+    }
+
+    // Step 3: yt-dlp --print mode — works for BOTH photos AND videos
     // Uses --print thumbnail/title/uploader which exits 0 even for photo-only posts
     // (never throws "No video formats found")
     try {
@@ -152,7 +168,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
     }
 
-    // Step 3: yt-dlp full JSON — fallback for reels/videos if --print mode fails
+    // Step 4: yt-dlp full JSON — fallback for reels/videos if --print mode fails
     try {
       const result = await analyzeWithYtDlp(url, platform);
       if (result.items.length > 0) {
@@ -193,9 +209,90 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
   );
 }
 
-// ─── Instagram embed scraper (public, no auth needed) ────────────────────────
-// Fetches https://www.instagram.com/p/{shortcode}/embed/ and parses the HTML
-// to extract photo/video URLs. Works even when Instagram blocks API access.
+// ─── Instagram embed scraper (multi-strategy, resilient) ──────────────────────
+// Tries multiple independent strategies to extract Instagram photos.
+// Each strategy is wrapped in try/catch so one failure doesn't block others.
+
+function shortcodeToMediaId(shortcode: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let id = BigInt(0);
+  for (const char of shortcode) {
+    const idx = alphabet.indexOf(char);
+    if (idx === -1) continue;
+    id = id * BigInt(64) + BigInt(idx);
+  }
+  return id.toString();
+}
+
+function getInstagramCookieHeader(): string | null {
+  let cookieText = "";
+  if (process.env.YTDLP_COOKIES) {
+    try {
+      cookieText = Buffer.from(process.env.YTDLP_COOKIES, "base64").toString("utf8");
+    } catch { return null; }
+  } else {
+    const cookiesPath = resolve(process.cwd(), "cookies.txt");
+    if (existsSync(cookiesPath)) {
+      cookieText = readFileSync(cookiesPath, "utf8");
+    }
+  }
+  if (!cookieText) return null;
+  const cookies: string[] = [];
+  let hasSessionId = false;
+  for (const line of cookieText.split("\n")) {
+    if (line.startsWith("#") || !line.trim()) continue;
+    const parts = line.split("\t");
+    if (parts.length >= 7 && (parts[0].includes("instagram") || parts[0].includes(".instagram.com"))) {
+      cookies.push(`${parts[5].trim()}=${parts[6].trim()}`);
+      if (parts[5].trim() === "sessionid") hasSessionId = true;
+    }
+  }
+  return hasSessionId ? cookies.join("; ") : null;
+}
+
+/** Parse Instagram private API /api/v1/media/{id}/info/ response */
+function parseInstagramApiResponse(data: Record<string, unknown>, shortcode: string): MediaItem[] {
+  const items: MediaItem[] = [];
+  const mediaItems = (data.items as Record<string, unknown>[]) || [];
+  for (const media of mediaItems) {
+    const carouselMedia = (media.carousel_media as Record<string, unknown>[]) || [];
+    const mediaList = carouselMedia.length > 0 ? carouselMedia : [media];
+    for (const item of mediaList) {
+      const mediaType = item.media_type as number;
+      if (mediaType === 1 || !mediaType) {
+        const imgVersions = item.image_versions2 as Record<string, unknown> | undefined;
+        const candidates = (imgVersions?.candidates as Record<string, unknown>[]) || [];
+        const best = candidates.sort((a, b) => ((b.width as number) || 0) - ((a.width as number) || 0))[0];
+        const imgUrl = best ? String(best.url || "") : "";
+        if (imgUrl) {
+          items.push({
+            type: "photo", title: `Instagram Post ${shortcode}`, thumbnail: imgUrl,
+            duration: null, formats: [], direct_url: imgUrl, audio_url: null, index: items.length,
+          });
+        }
+      } else if (mediaType === 2) {
+        const videoVersions = (item.video_versions as Record<string, unknown>[]) || [];
+        const bestVideo = videoVersions.sort((a, b) => ((b.width as number) || 0) - ((a.width as number) || 0))[0];
+        const videoUrl = bestVideo ? String(bestVideo.url || "") : "";
+        const imgVersions = item.image_versions2 as Record<string, unknown> | undefined;
+        const candidates = (imgVersions?.candidates as Record<string, unknown>[]) || [];
+        const thumbBest = candidates.sort((a, b) => ((b.width as number) || 0) - ((a.width as number) || 0))[0];
+        const thumbUrl = thumbBest ? String(thumbBest.url || "") : "";
+        if (videoUrl) {
+          items.push({
+            type: "video", title: `Instagram Post ${shortcode}`, thumbnail: thumbUrl,
+            duration: (item.video_duration as number) || null,
+            formats: [{ format_id: "best", quality: "Best", ext: "mp4", filesize: null, resolution: null,
+              vcodec: "avc1", acodec: "mp4a", height: (bestVideo?.height as number) || null,
+              fps: null, url: videoUrl, has_audio: true }],
+            direct_url: null, audio_url: null, index: items.length,
+          });
+        }
+      }
+    }
+  }
+  return items;
+}
 
 async function scrapeInstagramEmbedPhotos(
   url: string,
@@ -207,97 +304,209 @@ async function scrapeInstagramEmbedPhotos(
   }
   const shortcode = shortcodeMatch[1];
 
-  const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
-  console.log(`[instagram-embed] Fetching embed page: ${embedUrl}`);
-
-  const response = await fetch(embedUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Instagram embed returned HTTP ${response.status}`);
-  }
-
-  const html = await response.text();
-  console.log(`[instagram-embed] Got ${html.length} bytes`);
+  const BROWSER_HEADERS: Record<string, string> = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+  };
 
   const items: MediaItem[] = [];
 
-  // ── Strategy 1: Parse window.__additionalDataLoaded / __initialData JSON blobs ──
-  const jsonPatterns = [
-    /window\.__additionalDataLoaded\s*\(\s*[^,]+,\s*([\s\S]+?\})\s*\);/,
-    /window\._sharedData\s*=\s*([\s\S]+?\});\s*<\/script>/,
-    /"gql_data"\s*:\s*([\s\S]+\})/,
-  ];
-
-  for (const pattern of jsonPatterns) {
-    const m = html.match(pattern);
-    if (!m) continue;
-    try {
-      const parsed = JSON.parse(m[1]);
-      const mediaItems = extractFromInstagramJson(parsed, shortcode);
-      if (mediaItems.length > 0) {
-        items.push(...mediaItems);
-        break;
-      }
-    } catch { /* try next pattern */ }
-  }
-
-  // ── Strategy 2: Pull image URLs from embedded <img> tags (og images) ──
-  if (items.length === 0) {
-    const imgPattern = /https:\/\/(?:scontent[^"'\s]+|cdninstagram[^"'\s]+)\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
-    const seen = new Set<string>();
-    let m: RegExpExecArray | null;
-    while ((m = imgPattern.exec(html)) !== null) {
-      const imgUrl = m[0].replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
-      if (!seen.has(imgUrl)) {
-        seen.add(imgUrl);
+  // ── Strategy 1: Instagram oEmbed API (most reliable from datacenter IPs) ──
+  try {
+    const oembedUrl = `https://api.instagram.com/oembed/?url=https://www.instagram.com/p/${shortcode}/&maxwidth=1080`;
+    console.log(`[instagram-embed] Strategy 1: oEmbed API`);
+    const oRes = await fetch(oembedUrl, { headers: { "User-Agent": USER_AGENT } });
+    if (oRes.ok) {
+      const oData = await oRes.json() as Record<string, unknown>;
+      const thumbUrl = String(oData.thumbnail_url || "");
+      if (thumbUrl && thumbUrl.startsWith("http")) {
+        const hiResUrl = thumbUrl.replace(/\/s\d+x\d+\//, "/s1080x1080/");
         items.push({
           type: "photo",
-          title: `Instagram Post ${shortcode}`,
-          thumbnail: imgUrl,
-          duration: null,
-          formats: [],
-          direct_url: imgUrl,
-          audio_url: null,
-          index: items.length,
+          title: String(oData.title || `Instagram Post ${shortcode}`),
+          thumbnail: hiResUrl, duration: null, formats: [],
+          direct_url: hiResUrl, audio_url: null, index: 0,
         });
+        console.log(`[instagram-embed] oEmbed OK`);
       }
+    } else {
+      console.log(`[instagram-embed] oEmbed returned HTTP ${oRes.status}`);
+    }
+  } catch (err) {
+    console.error("[instagram-embed] oEmbed failed:", err instanceof Error ? err.message : err);
+  }
+
+  // ── Strategy 2: /media/?size=l redirect (legacy endpoint) ──
+  if (items.length === 0) {
+    try {
+      const mediaUrl = `https://www.instagram.com/p/${shortcode}/media/?size=l`;
+      console.log(`[instagram-embed] Strategy 2: /media/ redirect`);
+      const mediaRes = await fetch(mediaUrl, { headers: BROWSER_HEADERS, redirect: "follow" });
+      if (mediaRes.ok) {
+        const ct = mediaRes.headers.get("content-type") || "";
+        if (ct.startsWith("image/")) {
+          const finalUrl = mediaRes.url;
+          items.push({
+            type: "photo", title: `Instagram Post ${shortcode}`,
+            thumbnail: finalUrl, duration: null, formats: [],
+            direct_url: finalUrl, audio_url: null, index: 0,
+          });
+          console.log(`[instagram-embed] /media/ redirect OK`);
+        }
+      }
+    } catch (err) {
+      console.error("[instagram-embed] /media/ redirect failed:", err instanceof Error ? err.message : err);
     }
   }
 
-  // ── Strategy 3: Try oEmbed (returns thumbnail + title, basic fallback) ──
+  // ── Strategy 3: Instagram private API with cookies ──
   if (items.length === 0) {
-    const oembedUrl = `https://api.instagram.com/oembed/?url=${encodeURIComponent(url)}&maxwidth=1080`;
     try {
-      const oRes = await fetch(oembedUrl, {
-        headers: { "User-Agent": USER_AGENT },
-      });
-      if (oRes.ok) {
-        const oData = await oRes.json() as Record<string, unknown>;
-        const thumbUrl = String(oData.thumbnail_url || "");
-        if (thumbUrl) {
-          items.push({
-            type: "photo",
-            title: String(oData.title || `Instagram Post ${shortcode}`),
-            thumbnail: thumbUrl,
-            duration: null,
-            formats: [],
-            direct_url: thumbUrl,
-            audio_url: null,
-            index: 0,
-          });
+      const cookieHeader = getInstagramCookieHeader();
+      if (cookieHeader) {
+        const mediaId = shortcodeToMediaId(shortcode);
+        const apiUrl = `https://i.instagram.com/api/v1/media/${mediaId}/info/`;
+        console.log(`[instagram-embed] Strategy 3: private API (media_id=${mediaId})`);
+        const apiRes = await fetch(apiUrl, {
+          headers: {
+            "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 458229234)",
+            "X-IG-App-ID": "936619743392459",
+            "X-IG-WWW-Claim": "0",
+            "Origin": "https://www.instagram.com",
+            "Referer": "https://www.instagram.com/",
+            "Cookie": cookieHeader,
+          },
+        });
+        if (apiRes.ok) {
+          const apiData = await apiRes.json() as Record<string, unknown>;
+          const apiItems = parseInstagramApiResponse(apiData, shortcode);
+          if (apiItems.length > 0) {
+            items.push(...apiItems);
+            console.log(`[instagram-embed] Private API OK: ${apiItems.length} items`);
+          }
+        } else {
+          console.log(`[instagram-embed] Private API returned HTTP ${apiRes.status}`);
         }
       }
-    } catch { /* oEmbed failed */ }
+    } catch (err) {
+      console.error("[instagram-embed] Private API failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── Strategy 4: Embed page HTML parsing ──
+  if (items.length === 0) {
+    try {
+      const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
+      console.log(`[instagram-embed] Strategy 4: embed page`);
+      const response = await fetch(embedUrl, {
+        headers: { ...BROWSER_HEADERS, "Referer": "https://www.instagram.com/" },
+      });
+      if (response.ok) {
+        const html = await response.text();
+        console.log(`[instagram-embed] Embed page: ${html.length} bytes`);
+
+        const jsonPatterns = [
+          /window\.__additionalDataLoaded\s*\(\s*[^,]+,\s*([\s\S]+?\})\s*\);/,
+          /window\._sharedData\s*=\s*([\s\S]+?\});\s*<\/script>/,
+          /"gql_data"\s*:\s*([\s\S]+\})/,
+        ];
+        for (const pattern of jsonPatterns) {
+          const m = html.match(pattern);
+          if (!m) continue;
+          try {
+            const parsed = JSON.parse(m[1]);
+            const mediaItems = extractFromInstagramJson(parsed, shortcode);
+            if (mediaItems.length > 0) { items.push(...mediaItems); break; }
+          } catch { /* try next pattern */ }
+        }
+
+        if (items.length === 0) {
+          const imgPattern = /https:\/\/(?:scontent[^"'\s]+|cdninstagram[^"'\s]+)\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+          const seen = new Set<string>();
+          let m: RegExpExecArray | null;
+          while ((m = imgPattern.exec(html)) !== null) {
+            const imgUrl = m[0].replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+            if (!seen.has(imgUrl)) {
+              seen.add(imgUrl);
+              items.push({
+                type: "photo", title: `Instagram Post ${shortcode}`,
+                thumbnail: imgUrl, duration: null, formats: [],
+                direct_url: imgUrl, audio_url: null, index: items.length,
+              });
+            }
+          }
+        }
+      } else {
+        console.log(`[instagram-embed] Embed page returned HTTP ${response.status}`);
+      }
+    } catch (err) {
+      console.error("[instagram-embed] Embed page failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  // ── Strategy 5: Main post page og:image extraction ──
+  if (items.length === 0) {
+    try {
+      const pageUrl = `https://www.instagram.com/p/${shortcode}/`;
+      console.log(`[instagram-embed] Strategy 5: main page og:image`);
+      const pageRes = await fetch(pageUrl, { headers: BROWSER_HEADERS, redirect: "follow" });
+      if (pageRes.ok) {
+        const html = await pageRes.text();
+        const metaPatterns = [
+          /<meta\s+property="og:image"\s+content="([^"]+)"/i,
+          /<meta\s+content="([^"]+)"\s+property="og:image"/i,
+          /<meta\s+(?:name|property)="twitter:image"\s+content="([^"]+)"/i,
+          /<meta\s+content="([^"]+)"\s+(?:name|property)="twitter:image"/i,
+        ];
+        for (const pat of metaPatterns) {
+          const m = html.match(pat);
+          if (m) {
+            const imgUrl = m[1].replace(/&amp;/g, "&");
+            if (imgUrl.startsWith("http")) {
+              items.push({
+                type: "photo", title: `Instagram Post ${shortcode}`,
+                thumbnail: imgUrl, duration: null, formats: [],
+                direct_url: imgUrl, audio_url: null, index: 0,
+              });
+              console.log(`[instagram-embed] og:image OK`);
+              break;
+            }
+          }
+        }
+        if (items.length === 0) {
+          const cdnPattern = /https:\/\/(?:scontent[^"'\s\\]+)\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s\\]*)?/gi;
+          const seen = new Set<string>();
+          let m: RegExpExecArray | null;
+          while ((m = cdnPattern.exec(html)) !== null) {
+            const imgUrl = m[0].replace(/\\u0026/g, "&").replace(/&amp;/g, "&");
+            if (!seen.has(imgUrl) && !imgUrl.includes("s150x150") && !imgUrl.includes("s100x100")) {
+              seen.add(imgUrl);
+              items.push({
+                type: "photo", title: `Instagram Post ${shortcode}`,
+                thumbnail: imgUrl, duration: null, formats: [],
+                direct_url: imgUrl, audio_url: null, index: items.length,
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[instagram-embed] Main page failed:", err instanceof Error ? err.message : err);
+    }
   }
 
   if (items.length === 0) {
-    throw new Error("Instagram embed scraper found no media");
+    throw new Error("Instagram embed scraper found no media (all 5 strategies failed)");
   }
 
   // Deduplicate by direct_url

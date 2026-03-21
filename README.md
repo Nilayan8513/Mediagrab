@@ -8,7 +8,7 @@
 
 ### *Your All-in-One Social Media Downloader*
 
-**Download videos, reels, photos & audio from Instagram, Twitter/X, Facebook — all from one sleek interface.**
+**Download videos, reels, photos & audio from Instagram, Twitter/X, Facebook & more — all from one sleek interface.**
 
 <br />
 
@@ -25,11 +25,12 @@
   <img src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram" />
   <img src="https://img.shields.io/badge/Twitter%20/%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Twitter / X" />
   <img src="https://img.shields.io/badge/Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Facebook" />
+  <img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube" />
 </p>
 
 <br />
 
-[![Live Site](https://img.shields.io/badge/🌐_Live_Site-mediagrab--6i5t.onrender.com-4263eb?style=for-the-badge)](https://mediagrab-6i5t.onrender.com/)
+[🚀 **Live Demo**](https://mediagrab-6i5t.onrender.com/) &nbsp;&nbsp;•&nbsp;&nbsp; [🐛 **Report Bug**](https://github.com/Nilayan8513/social-media-downloader-backend/issues) &nbsp;&nbsp;•&nbsp;&nbsp; [✨ **Request Feature**](https://github.com/Nilayan8513/social-media-downloader-backend/issues)
 
 <br />
 
@@ -120,6 +121,7 @@
 | <img src="https://img.shields.io/badge/-Instagram-E4405F?logo=instagram&logoColor=white&style=flat-square" /> | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | <img src="https://img.shields.io/badge/-Twitter%20/%20X-000000?logo=x&logoColor=white&style=flat-square" /> | ✅ | ✅ | — | — | ✅ | ✅ |
 | <img src="https://img.shields.io/badge/-Facebook-1877F2?logo=facebook&logoColor=white&style=flat-square" /> | ✅ | ✅ | ✅ | — | ✅ | — |
+| <img src="https://img.shields.io/badge/-YouTube-FF0000?logo=youtube&logoColor=white&style=flat-square" /> | ✅ | — | — | — | ✅ | — |
 
 </div>
 
@@ -274,6 +276,37 @@ docker run -d -p 3000:3000 \
 ```
 
 > **Docker image includes:** Node.js 20, Python 3, FFmpeg, yt-dlp, instaloader, gallery-dl — all pre-installed.
+
+<br />
+
+---
+
+## ☁️ Cloud Deployment
+
+### Google Cloud Run
+
+The included `cloudbuild.yaml` automates the full CI/CD pipeline:
+
+```bash
+gcloud builds submit --config cloudbuild.yaml
+```
+
+| Setting | Value |
+|---------|-------|
+| **CPU** | 2 vCPUs |
+| **Memory** | 2 GB |
+| **Max Instances** | 5 |
+| **Min Instances** | 0 (scale to zero) |
+| **Timeout** | 300s |
+| **Region** | us-central1 |
+
+### Render
+
+1. Push to GitHub
+2. Create a new **Web Service** on [Render](https://render.com/)
+3. **Build Command:** `npm install && npm run build`
+4. **Start Command:** `npm start`
+5. Add env vars as needed
 
 <br />
 
@@ -512,7 +545,7 @@ Contributions, issues, and feature requests are welcome!
 
 ## 👨‍💻 Author
 
-<div align="left">
+<div align="center">
 
 **Nilayan** — CSE Student | Full Stack + ML
 
