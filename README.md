@@ -30,7 +30,7 @@
 
 <br />
 
-[🚀 **Live Demo**](https://mediagrab-6i5t.onrender.com/) &nbsp;&nbsp;•&nbsp;&nbsp; [🐛 **Report Bug**](https://github.com/Nilayan8513/social-media-downloader-backend/issues) &nbsp;&nbsp;•&nbsp;&nbsp; [✨ **Request Feature**](https://github.com/Nilayan8513/social-media-downloader-backend/issues)
+[![Live Site](https://img.shields.io/badge/🌐_Live_Site-mediagrab.duckdns.org-4263eb?style=for-the-badge)](https://mediagrab.duckdns.org/)
 
 <br />
 
