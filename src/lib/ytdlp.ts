@@ -136,23 +136,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       console.error("[instagram] instaloader failed:", lastError);
     }
 
-    // Step 2: Instagram embed scraper — uses public /embed/ endpoint, NO GraphQL,
-    // no auth needed. Works even when Instagram blocks API/GraphQL access from
-    // datacenter IPs. 
-    try {
-      const result = await scrapeInstagramEmbedPhotos(url, platform);
-      if (result.items.length > 0) {
-        console.log(`[instagram] embed scraper OK: ${result.items.length} items`);
-        return result;
-      }
-      lastError = "embed scraper returned 0 items";
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "embed scraper failed";
-      console.error("[instagram] embed scraper failed:", msg);
-      if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
-    }
-
-    // Step 3: yt-dlp --print mode — works for BOTH photos AND videos
+    // Step 2: yt-dlp --print mode — works for BOTH photos AND videos
     // Uses --print thumbnail/title/uploader which exits 0 even for photo-only posts
     // (never throws "No video formats found")
     try {
@@ -168,7 +152,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
     }
 
-    // Step 4: yt-dlp full JSON — fallback for reels/videos if --print mode fails
+    // Step 3: yt-dlp full JSON — fallback for reels/videos if --print mode fails
     try {
       const result = await analyzeWithYtDlp(url, platform);
       if (result.items.length > 0) {
@@ -180,6 +164,24 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
       const msg = err instanceof Error ? err.message : "yt-dlp failed";
       console.error("[instagram] yt-dlp failed:", msg);
       if (!lastError || lastError === "instaloader returned 0 items") lastError = msg;
+    }
+
+    // Step 4: Instagram embed/oEmbed scraper — LAST RESORT
+    // Uses public endpoints (oEmbed API, /media/ redirect, embed page, etc.)
+    // No GraphQL, no auth needed. Only used when Steps 1-3 fail (e.g. 403/401).
+    // NOTE: oEmbed only returns 1 thumbnail (no carousel/video support),
+    // so this must be tried AFTER yt-dlp which properly handles reels & carousels.
+    try {
+      const result = await scrapeInstagramEmbedPhotos(url, platform);
+      if (result.items.length > 0) {
+        console.log(`[instagram] embed scraper OK: ${result.items.length} items`);
+        return result;
+      }
+      lastError = "embed scraper returned 0 items";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "embed scraper failed";
+      console.error("[instagram] embed scraper failed:", msg);
+      if (!lastError) lastError = msg;
     }
 
     throw new Error(
