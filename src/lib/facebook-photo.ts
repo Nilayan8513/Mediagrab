@@ -15,12 +15,78 @@
  */
 
 import type { MediaInfo, MediaItem, Platform } from "./ytdlp";
+import { existsSync, readFileSync } from "fs";
+import { resolve } from "path";
 
 const USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const MOBILE_USER_AGENT =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+// ─── Cookie handling ──────────────────────────────────────────────────────────
+
+/**
+ * Parse Netscape cookies.txt format and extract Facebook cookies.
+ * Returns a Cookie header string like "c_user=XXX; xs=YYY; datr=ZZZ"
+ */
+function getFacebookCookies(): string {
+    let cookieText = "";
+
+    // Priority 1: YTDLP_COOKIES env var (base64-encoded)
+    if (process.env.YTDLP_COOKIES) {
+        try {
+            cookieText = Buffer.from(process.env.YTDLP_COOKIES, "base64").toString("utf8");
+        } catch {
+            console.error("[fb-photo] Failed to decode YTDLP_COOKIES");
+        }
+    }
+
+    // Priority 2: cookies.txt file
+    if (!cookieText) {
+        const cookiesFile = resolve(process.cwd(), "cookies.txt");
+        if (existsSync(cookiesFile)) {
+            cookieText = readFileSync(cookiesFile, "utf8");
+        }
+    }
+
+    if (!cookieText) return "";
+
+    // Parse Netscape cookies.txt format
+    // Format: domain\tTRUE/FALSE\tpath\tTRUE/FALSE\texpiry\tname\tvalue
+    const fbCookies: string[] = [];
+    for (const line of cookieText.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("#") || !trimmed) continue;
+
+        const parts = trimmed.split("\t");
+        if (parts.length >= 7) {
+            const domain = parts[0];
+            const name = parts[5];
+            const value = parts[6];
+
+            // Only include Facebook cookies
+            if (domain.includes("facebook.com") || domain.includes(".facebook.com")) {
+                fbCookies.push(`${name}=${value}`);
+            }
+        }
+    }
+
+    const cookieHeader = fbCookies.join("; ");
+    if (cookieHeader) {
+        console.log(`[fb-photo] Found ${fbCookies.length} Facebook cookies`);
+    }
+    return cookieHeader;
+}
+
+// Cache cookies so we don't re-parse on every request
+let _cachedCookies: string | null = null;
+function getCachedFacebookCookies(): string {
+    if (_cachedCookies === null) {
+        _cachedCookies = getFacebookCookies();
+    }
+    return _cachedCookies;
+}
 
 // ─── URL pattern helpers ──────────────────────────────────────────────────────
 
@@ -66,11 +132,13 @@ export function isFacebookPhotoUrl(url: string): boolean {
 
 /**
  * Fetch a Facebook page with full browser-like headers.
- * The sec-ch-ua headers are CRITICAL — without them, Facebook serves a minimal
- * JS-only shell (~1.5KB) instead of the full page (~1.2MB) with embedded data.
+ * Sends cookies if available (needed for story.php URLs on server IPs).
+ * If the first attempt redirects to login, retries with cookies.
  */
 async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: string; finalUrl: string }> {
-    const headers: Record<string, string> = mobile ? {
+    const cookies = getCachedFacebookCookies();
+
+    const baseHeaders: Record<string, string> = mobile ? {
         "User-Agent": MOBILE_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
@@ -96,6 +164,12 @@ async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: s
         "Upgrade-Insecure-Requests": "1",
     };
 
+    // Always send cookies if available
+    const headers = { ...baseHeaders };
+    if (cookies) {
+        headers["Cookie"] = cookies;
+    }
+
     const response = await fetch(url, {
         headers,
         redirect: "follow",
@@ -107,6 +181,22 @@ async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: s
 
     const html = await response.text();
     const finalUrl = response.url;
+
+    // Detect login redirect — Facebook redirects story.php URLs to /login/
+    // on server IPs even for public posts
+    if (finalUrl.includes("/login/") || finalUrl.includes("login.php")) {
+        console.log(`[fb-photo] Redirected to login: ${finalUrl.substring(0, 100)}`);
+
+        // If we didn't have cookies, we can't do anything
+        if (!cookies) {
+            console.log("[fb-photo] No cookies available to bypass login redirect");
+            throw new Error("LOGIN_REQUIRED");
+        }
+
+        // If we had cookies but still got redirected, cookies might be expired
+        console.log("[fb-photo] Cookies were sent but still redirected — cookies may be expired");
+        throw new Error("LOGIN_REQUIRED");
+    }
 
     return { html, finalUrl };
 }
