@@ -1,22 +1,3 @@
-// /**
-//  * Facebook Photo Scraper
-//  *
-//  * Extracts full-resolution photos from Facebook posts (including /share/p/ links).
-//  *
-//  * Architecture:
-//  *   1. Try desktop page WITHOUT cookies (cleanest HTML, only has this post's data)
-//  *   2. If login-walled → use mbasic.facebook.com WITH cookies
-//  *      (mbasic is MUCH cleaner than the full desktop page — no news feed pollution)
-//  *   3. Mobile page as last resort
-//  *
-//  * CRITICAL LESSON: When cookies are sent to www.facebook.com, the response
-//  * includes the ENTIRE news feed, sidebar, and suggested posts — all containing
-//  * scontent images. Parsing this page for post photos is unreliable.
-//  * Instead, we use mbasic.facebook.com which returns ONLY the target post content.
-//  *
-//  * This module is ONLY for photos. Video/Reel downloads remain handled by yt-dlp.
-//  */
-
 import type { MediaInfo, MediaItem, Platform } from "./ytdlp";
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
@@ -156,7 +137,6 @@ async function fetchPage(url: string, options: {
     const finalUrl = response.url;
 
     if (finalUrl.includes("/login/") || finalUrl.includes("login.php") || finalUrl.includes("/login?")) {
-        // Include the login redirect URL so callers can extract story IDs from it
         throw new Error(`LOGIN_REDIRECT:${finalUrl}`);
     }
 
@@ -190,40 +170,36 @@ function decodeHTMLEntities(str: string): string {
 
 /**
  * Check if a URL is a post photo (not a profile pic, emoji, or UI element).
+ * RELAXED: we only filter out obvious non-post images.
  */
 function isPostPhoto(url: string): boolean {
     if (!url.includes("scontent") && !url.includes("fbcdn.net")) return false;
     if (url.includes("emoji") || url.includes("reaction")) return false;
     if (url.includes("/rsrc.php/")) return false;
     if (url.includes("static.xx.fbcdn.net/rsrc")) return false;
-    if (url.includes("external") && url.includes("fbcdn.net")) return false;
 
-    // Profile pic patterns
+    // Profile pic patterns (these specific CDN paths are always profile pics)
     if (url.includes("t39.30808-1/")) return false;
     if (url.includes("t1.30497-1/")) return false;
     if (url.includes("t1.6435-1/")) return false;
     if (url.includes("t39.30808-0/")) return false;
 
-    // Skip tiny sizes
+    // Skip tiny sizes only (< 80px)
     const stpMatch = url.match(/stp=[^&]*/);
     if (stpMatch) {
         const dimMatch = stpMatch[0].match(/(?:s|p)(\d+)x(\d+)/);
         if (dimMatch) {
             const maxDim = Math.max(parseInt(dimMatch[1]), parseInt(dimMatch[2]));
-            if (maxDim < 100) return false;
+            if (maxDim < 80) return false;
         }
     }
 
-    // Post photos use t39.30808-6
-    if (url.includes("t39.30808-6/")) return true;
-
-    return false;
+    // Accept all scontent/fbcdn URLs that pass the above filters
+    return true;
 }
 
 /**
  * Extract the unique fingerprint from a Facebook CDN URL for deduplication.
- * Two different photos always have different numeric ID sequences.
- * Same photo at different resolutions shares the same IDs.
  */
 function getPhotoFingerprint(url: string): string {
     try {
@@ -231,7 +207,6 @@ function getPhotoFingerprint(url: string): string {
         const pathParts = parsed.pathname.split("/");
         const filename = pathParts[pathParts.length - 1] || "";
 
-        // Extract the unique numeric ID sequence: "123456789_12345678901234_1234567890123456789_n.jpg"
         const idMatch = filename.match(/(\d{5,}_\d{5,})/);
         if (idMatch) return idMatch[1];
 
@@ -377,7 +352,6 @@ function extractSubattachmentImages(html: string): string[] {
     const seen = new Set<string>();
     let match;
 
-    // Strategy 1: subattachments/all_subattachments nodes
     const subPattern = /"(?:sub_?attachments|all_sub_?attachments)"\s*:\s*\{"(?:nodes|edges)"\s*:\s*\[([\s\S]*?)\]\s*\}/gi;
     while ((match = subPattern.exec(html)) !== null) {
         const block = match[1];
@@ -392,7 +366,6 @@ function extractSubattachmentImages(html: string): string[] {
         }
     }
 
-    // Strategy 2: media image URIs with dimensions
     const mediaPattern = /"media"\s*:\s*\{[^}]*?"image"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"[^}]*?"(?:width|height)"\s*:\s*(\d+)/gi;
     while ((match = mediaPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
@@ -403,7 +376,6 @@ function extractSubattachmentImages(html: string): string[] {
         }
     }
 
-    // Strategy 3: photo_image objects
     const photoImagePattern = /"photo_image"\s*:\s*\{"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
     while ((match = photoImagePattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
@@ -413,7 +385,6 @@ function extractSubattachmentImages(html: string): string[] {
         }
     }
 
-    // Strategy 4: viewer_image / large image patterns
     const viewerPattern = /"(?:viewer_image|large_share_image|full_image|attached_photo)"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
     while ((match = viewerPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
@@ -427,9 +398,6 @@ function extractSubattachmentImages(html: string): string[] {
     return images;
 }
 
-/**
- * Targeted URI extraction from JSON fields — used only for unauthenticated pages.
- */
 function extractScriptImages(html: string): string[] {
     const images: string[] = [];
     const seen = new Set<string>();
@@ -458,11 +426,6 @@ function extractScriptImages(html: string): string[] {
 
 // ─── Resolve pfbid/share URLs ─────────────────────────────────────────────────
 
-/**
- * Extract story_fbid and owner id from a Facebook login redirect URL.
- * When Facebook redirects /share/p/ to /login/?next=..., the `next` param
- * contains the real story URL with story_fbid and id.
- */
 function extractIdsFromLoginRedirect(loginUrl: string): { storyFbid: string; ownerId: string } | null {
     try {
         const parsed = new URL(loginUrl);
@@ -472,8 +435,6 @@ function extractIdsFromLoginRedirect(loginUrl: string): { storyFbid: string; own
         const decodedNext = decodeURIComponent(nextParam);
         console.log(`[fb-photo] Login redirect 'next' param: ${decodedNext.substring(0, 120)}`);
 
-        // The next URL often looks like:
-        // https://www.facebook.com/story.php?story_fbid=XXXX&id=YYYY&rdid=...
         const nextUrl = new URL(decodedNext);
         const storyFbid = nextUrl.searchParams.get("story_fbid");
         const ownerId = nextUrl.searchParams.get("id");
@@ -482,7 +443,6 @@ function extractIdsFromLoginRedirect(loginUrl: string): { storyFbid: string; own
             return { storyFbid, ownerId };
         }
 
-        // Also try extracting from the path for /permalink.php?story_fbid=XXX&id=YYY
         const fbidMatch = decodedNext.match(/story_fbid[=:](\d+)/);
         const idMatch = decodedNext.match(/[?&]id[=:](\d+)/);
         if (fbidMatch && idMatch) {
@@ -495,33 +455,18 @@ function extractIdsFromLoginRedirect(loginUrl: string): { storyFbid: string; own
     }
 }
 
-/**
- * Check if a URL is a login redirect.
- */
 function isLoginUrl(url: string): boolean {
     return url.includes("/login/") || url.includes("login.php") || url.includes("/login?");
 }
 
-/**
- * Resolve a Facebook URL (especially pfbid and /share/p/ URLs) to get the
- * canonical post URL and any photo page links.
- *
- * This is CRITICAL because mbasic.facebook.com doesn't support pfbid URLs.
- * We follow redirects to find the real post URL.
- *
- * On datacenter IPs (AWS, etc.), Facebook aggressively redirects /share/p/
- * to login pages. The login URL's `next` parameter contains the real story
- * URL with story_fbid and id — we can extract those directly.
- */
 async function resolveUrl(url: string, cookies: string): Promise<string> {
-    // If it's already a standard URL, no resolution needed
     if (!url.includes("pfbid") && !url.includes("/share/")) {
         return url;
     }
 
     console.log(`[fb-photo] Resolving URL: ${url.substring(0, 80)}`);
 
-    // ── Attempt 1: Fetch WITHOUT cookies first (cleaner response) ──
+    // Attempt 1: No cookies
     try {
         const headers: Record<string, string> = {
             "User-Agent": USER_AGENT,
@@ -534,7 +479,6 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
 
         console.log(`[fb-photo] Resolved (no cookies) to: ${finalUrl.substring(0, 120)}`);
 
-        // If we hit a login redirect, extract IDs from the redirect URL
         if (isLoginUrl(finalUrl)) {
             console.log(`[fb-photo] Got login redirect, extracting story IDs from URL`);
             const ids = extractIdsFromLoginRedirect(finalUrl);
@@ -543,16 +487,14 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
                 console.log(`[fb-photo] Extracted mbasic URL from login redirect: ${mbasicUrl}`);
                 return mbasicUrl;
             }
-            // Fall through to attempt 2 (with cookies)
         } else {
-            // We got a real page — try to extract info from it
             return extractResolvedUrl(html, finalUrl, url);
         }
     } catch (err) {
         console.error("[fb-photo] Resolve attempt 1 failed:", err instanceof Error ? err.message : err);
     }
 
-    // ── Attempt 2: Fetch WITH cookies ──
+    // Attempt 2: With cookies
     if (cookies) {
         try {
             console.log(`[fb-photo] Resolving with cookies`);
@@ -568,13 +510,10 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
 
             console.log(`[fb-photo] Resolved (with cookies) to: ${finalUrl.substring(0, 120)}`);
 
-            // Even with cookies, could still hit login redirect on datacenter IPs
             if (isLoginUrl(finalUrl)) {
-                console.log(`[fb-photo] Still login redirect with cookies, extracting IDs`);
                 const ids = extractIdsFromLoginRedirect(finalUrl);
                 if (ids) {
                     const mbasicUrl = `https://mbasic.facebook.com/story.php?story_fbid=${ids.storyFbid}&id=${ids.ownerId}`;
-                    console.log(`[fb-photo] Extracted mbasic URL: ${mbasicUrl}`);
                     return mbasicUrl;
                 }
             } else {
@@ -585,8 +524,7 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
         }
     }
 
-    // ── Attempt 3: Try mbasic.facebook.com directly with share URL ──
-    // mbasic sometimes handles /share/p/ redirects better from datacenter IPs
+    // Attempt 3: Try mbasic directly
     try {
         const mbasicShareUrl = url
             .replace(/^https?:\/\/(www\.)?facebook\.com/, "https://mbasic.facebook.com")
@@ -606,7 +544,6 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
         console.log(`[fb-photo] mbasic direct resolved to: ${finalUrl.substring(0, 120)}`);
 
         if (!isLoginUrl(finalUrl) && html.length > 5000) {
-            // mbasic successfully loaded — extract photo links or return the final URL
             const fbidMatches = html.match(/photo\.php\?fbid=(\d+)/g);
             if (fbidMatches && fbidMatches.length > 0) {
                 const fbid = fbidMatches[0].match(/fbid=(\d+)/)?.[1];
@@ -615,14 +552,11 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
                     return `https://mbasic.facebook.com/photo.php?fbid=${fbid}`;
                 }
             }
-            // Return the final URL from mbasic (it may have already resolved)
             if (!finalUrl.includes("/share/") && !finalUrl.includes("pfbid")) {
                 return finalUrl;
             }
-            // Return the mbasic URL itself — extractMbasicPhotos will handle it
             return mbasicShareUrl;
         } else if (isLoginUrl(finalUrl)) {
-            // Even mbasic redirected to login — try extracting IDs from it
             const ids = extractIdsFromLoginRedirect(finalUrl);
             if (ids) {
                 const mbasicUrl = `https://mbasic.facebook.com/story.php?story_fbid=${ids.storyFbid}&id=${ids.ownerId}`;
@@ -637,12 +571,7 @@ async function resolveUrl(url: string, cookies: string): Promise<string> {
     return url;
 }
 
-/**
- * Extract the resolved URL from the HTML page content.
- * Called after successfully fetching a non-login page.
- */
 function extractResolvedUrl(html: string, finalUrl: string, originalUrl: string): string {
-    // Try to extract permalink from the page
     const permalinkMatch = html.match(/"permalink_url"\s*:\s*"(https?:[^"]+)"/);
     if (permalinkMatch) {
         const permalink = decodeEscapedUrl(permalinkMatch[1]);
@@ -650,7 +579,6 @@ function extractResolvedUrl(html: string, finalUrl: string, originalUrl: string)
         return permalink;
     }
 
-    // Try to get story_fbid + id for constructing a mbasic URL
     const storyFbidMatch = html.match(/"story_fbid"\s*:\s*"?(\d+)/);
     const ownerIdMatch = html.match(/"(?:owner_id|actor_id|page_id)"\s*:\s*"?(\d+)/);
     if (storyFbidMatch && ownerIdMatch) {
@@ -659,12 +587,10 @@ function extractResolvedUrl(html: string, finalUrl: string, originalUrl: string)
         return mbasicUrl;
     }
 
-    // If we got a redirect to a regular URL, use it
     if (!finalUrl.includes("pfbid") && !finalUrl.includes("/share/")) {
         return finalUrl;
     }
 
-    // Try extracting photo fbids from the page for direct access
     const fbidMatches = html.match(/photo\.php\?fbid=(\d+)/g);
     if (fbidMatches && fbidMatches.length > 0) {
         const fbid = fbidMatches[0].match(/fbid=(\d+)/)?.[1];
@@ -679,17 +605,110 @@ function extractResolvedUrl(html: string, finalUrl: string, originalUrl: string)
 // ─── mbasic photo extraction ─────────────────────────────────────────────────
 
 /**
- * Extract photos via mbasic.facebook.com.
- *
- * mbasic is the BEST source for multi-photo posts because:
- *   - Returns clean HTML with just the post content (no news feed, no sidebar)
- *   - Each photo is linked as a separate page with a full-res version
- *   - Works even from server IPs (AWS, etc.)
+ * FIX: Extract ALL images from a photo page, not just one.
+ * The previous code returned only `[bestImage]` which discarded carousel images.
+ * Now we return ALL valid scontent images found on the page.
+ */
+async function fetchAllImagesFromPhotoPage(
+    pageUrl: string,
+    cookies: string
+): Promise<string[]> {
+    const images: string[] = [];
+    const seen = new Set<string>();
+
+    try {
+        const pageHeaders: Record<string, string> = {
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+        };
+        if (cookies) pageHeaders["Cookie"] = cookies;
+
+        const res = await fetch(pageUrl, { headers: pageHeaders, redirect: "follow" });
+        if (!res.ok) return images;
+        const photoHtml = await res.text();
+
+        // Get all scontent <img> tags — skip only obvious tiny thumbnails
+        const imgPattern = /<img[^>]+src=["'](https?:\/\/[^"']*(?:scontent|fbcdn)[^"']+)["'][^>]*>/gi;
+        let m;
+        while ((m = imgPattern.exec(photoHtml)) !== null) {
+            const decoded = decodeEscapedUrl(m[1]);
+
+            // Skip profile pics (50x50, 100x100) and very small images
+            if (decoded.includes("/p50x50/") || decoded.includes("/p100x100/") ||
+                decoded.includes("/s50x50/") || decoded.includes("/s100x100/") ||
+                decoded.includes("_t.jpg")) {
+                continue;
+            }
+
+            // Skip images flagged as non-post (emoji, icons, etc.)
+            if (!isPostPhoto(decoded)) continue;
+
+            if (!seen.has(decoded)) {
+                seen.add(decoded);
+                images.push(decoded);
+            }
+        }
+
+        // Also check "View Full Size" links — these give the highest resolution
+        const fullSizePattern = /href=["'](\/photo\/view_full_size\/\?[^"']+)["']/gi;
+        while ((m = fullSizePattern.exec(photoHtml)) !== null) {
+            try {
+                const fullUrl = `https://mbasic.facebook.com${decodeEscapedUrl(m[1]).replace(/&amp;/g, "&")}`;
+                const fullHeaders: Record<string, string> = {
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html,image/*,*/*",
+                };
+                if (cookies) fullHeaders["Cookie"] = cookies;
+
+                const fullRes = await fetch(fullUrl, { headers: fullHeaders, redirect: "follow" });
+                if (fullRes.ok) {
+                    const ct = fullRes.headers.get("content-type") || "";
+                    if (ct.startsWith("image/")) {
+                        if (!seen.has(fullRes.url)) {
+                            seen.add(fullRes.url);
+                            images.push(fullRes.url);
+                        }
+                    } else {
+                        const fullHtml = await fullRes.text();
+                        const directPattern = /<img[^>]+src=["'](https?:\/\/[^"']*(?:scontent|fbcdn)[^"']+)["']/gi;
+                        while ((m = directPattern.exec(fullHtml)) !== null) {
+                            const decoded = decodeEscapedUrl(m[1]);
+                            if (!seen.has(decoded) && isPostPhoto(decoded)) {
+                                seen.add(decoded);
+                                images.push(decoded);
+                            }
+                        }
+                    }
+                }
+            } catch { /* ignore */ }
+        }
+
+        // JSON-embedded image URIs (mbasic sometimes has these)
+        const jsonUriPattern = /"uri"\s*:\s*"(https?:[^"]+(?:scontent|fbcdn)[^"]+)"/gi;
+        while ((m = jsonUriPattern.exec(photoHtml)) !== null) {
+            const decoded = decodeEscapedUrl(m[1]);
+            if (!seen.has(decoded) && isPostPhoto(decoded)) {
+                seen.add(decoded);
+                images.push(decoded);
+            }
+        }
+
+    } catch (err) {
+        console.error(`[fb-photo] fetchAllImagesFromPhotoPage error for ${pageUrl}:`, err instanceof Error ? err.message : err);
+    }
+
+    return images;
+}
+
+/**
+ * FIX: For share/p/ links we need to also scrape all photo page links
+ * from the carousel/album, not just from the single resolved post page.
  *
  * Strategy:
- *   1. Fetch the post page from mbasic
- *   2. Find all photo page links (photo.php?fbid=...)
- *   3. Fetch each photo page individually to get full-res images
+ * 1. Resolve share URL → mbasic post page
+ * 2. Find ALL photo page links on the post page
+ * 3. Fetch EACH photo page and collect ALL images (not just one)
+ * 4. Also collect direct <img> from the post page itself as backup
  */
 async function extractMbasicPhotos(url: string, cookies: string): Promise<{
     images: string[];
@@ -703,7 +722,7 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
         .replace(/^https?:\/\/(www\.)?facebook\.com/, "https://mbasic.facebook.com")
         .replace(/^https?:\/\/m\.facebook\.com/, "https://mbasic.facebook.com");
 
-    // If URL has pfbid, resolve it first
+    // If URL has pfbid or share/, resolve it first
     if (url.includes("pfbid") || url.includes("/share/")) {
         const resolvedUrl = await resolveUrl(url, cookies);
         mbasicUrl = resolvedUrl
@@ -726,7 +745,6 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
     const html = await response.text();
     console.log(`[fb-photo] mbasic: ${html.length} bytes`);
 
-    // Check for error/login page
     if (html.includes("went wrong") || html.includes("Back to Home") || html.length < 5000) {
         console.log("[fb-photo] mbasic: error page or too small");
         return result;
@@ -736,12 +754,10 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
         return result;
     }
 
-    // Extract title/uploader from mbasic HTML
     result.title = extractTitle(html);
     result.uploader = extractUploader(html);
 
-    // ── Step 1: Find ALL photo page links ──
-    // These are links to individual photo pages like /photo.php?fbid=12345&...
+    // ── Step 1: Find ALL photo page links on the post ──
     const photoLinks: string[] = [];
     const seenLinks = new Set<string>();
     let match;
@@ -756,9 +772,19 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
         }
     }
 
-    // Pattern 2: /USERNAME/photos/...
-    const photosLinkPattern = /href=["'](\/[^"']+\/photos\/[^"']+)["']/gi;
+    // Pattern 2: /USERNAME/photos/... and /pages/.../photos/...
+    const photosLinkPattern = /href=["'](\/[^"']+\/photos?\/[^"']+)["']/gi;
     while ((match = photosLinkPattern.exec(html)) !== null) {
+        const rawUrl = match[1].replace(/&amp;/g, "&");
+        if (!seenLinks.has(rawUrl)) {
+            seenLinks.add(rawUrl);
+            photoLinks.push(`https://mbasic.facebook.com${rawUrl}`);
+        }
+    }
+
+    // Pattern 3: /media/set?set=... (albums)
+    const albumPattern = /href=["'](\/media\/set\?[^"']+)["']/gi;
+    while ((match = albumPattern.exec(html)) !== null) {
         const rawUrl = match[1].replace(/&amp;/g, "&");
         if (!seenLinks.has(rawUrl)) {
             seenLinks.add(rawUrl);
@@ -768,110 +794,34 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
 
     console.log(`[fb-photo] mbasic: found ${photoLinks.length} photo page links`);
 
-    // ── Step 2: Also grab any direct <img> scontent URLs from the post page ──
+    // ── Step 2: Collect direct <img> from the post page itself (backup) ──
     const directImages: string[] = [];
-    const imgPattern = /<img[^>]+src=["'](https?:\/\/scontent[^"']+)["'][^>]*>/gi;
+    const imgPattern = /<img[^>]+src=["'](https?:\/\/[^"']*(?:scontent|fbcdn)[^"']+)["'][^>]*>/gi;
     while ((match = imgPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
-        // Skip small profile pics and icons
         if (decoded.includes("/p50x50/") || decoded.includes("/p100x100/") ||
             decoded.includes("/s50x50/") || decoded.includes("/s100x100/") ||
-            decoded.includes("_s.") || decoded.includes("/cp0_")) {
+            decoded.includes("_t.jpg")) {
             continue;
         }
-        const stpMatch = decoded.match(/stp=[^&]*/);
-        if (stpMatch) {
-            const dimMatch = stpMatch[0].match(/(?:s|p)(\d+)x(\d+)/);
-            if (dimMatch) {
-                const maxDim = Math.max(parseInt(dimMatch[1]), parseInt(dimMatch[2]));
-                if (maxDim < 100) continue;
-            }
+        if (isPostPhoto(decoded)) {
+            directImages.push(decoded);
         }
-        directImages.push(decoded);
     }
 
     console.log(`[fb-photo] mbasic: ${directImages.length} direct images on post page`);
 
-    // ── Step 3: Fetch each photo page for full-resolution images ──
+    // ── Step 3: Fetch EACH photo page and collect ALL images ──
+    // FIX: We now use fetchAllImagesFromPhotoPage which returns ALL images,
+    // not just the single "best" one. This is critical for multi-photo posts.
     if (photoLinks.length > 0) {
         const BATCH_SIZE = 3;
+        const allPageImages: string[] = [];
+
         for (let i = 0; i < photoLinks.length; i += BATCH_SIZE) {
             const batch = photoLinks.slice(i, i + BATCH_SIZE);
             const results = await Promise.allSettled(
-                batch.map(async (pageUrl) => {
-                    try {
-                        const pageHeaders: Record<string, string> = {
-                            "User-Agent": USER_AGENT,
-                            "Accept": "text/html,application/xhtml+xml",
-                        };
-                        if (cookies) pageHeaders["Cookie"] = cookies;
-
-                        const res = await fetch(pageUrl, { headers: pageHeaders, redirect: "follow" });
-                        if (!res.ok) return [];
-                        const photoHtml = await res.text();
-
-                        const pageImages: string[] = [];
-
-                        // Get scontent images from the photo page (skip tiny ones)
-                        const pageImgPattern = /<img[^>]+src=["'](https?:\/\/scontent[^"']+)["'][^>]*>/gi;
-                        let m;
-                        while ((m = pageImgPattern.exec(photoHtml)) !== null) {
-                            const decoded = decodeEscapedUrl(m[1]);
-                            if (!decoded.includes("/p50x50/") && !decoded.includes("/p100x100/") &&
-                                !decoded.includes("/s50x50/") && !decoded.includes("/s100x100/") &&
-                                !decoded.includes("_s.")) {
-                                pageImages.push(decoded);
-                            }
-                        }
-
-                        // Also try "View Full Size" links
-                        const fullSizePattern = /href=["'](\/photo\/view_full_size\/\?[^"']+)["']/gi;
-                        while ((m = fullSizePattern.exec(photoHtml)) !== null) {
-                            try {
-                                const fullUrl = `https://mbasic.facebook.com${decodeEscapedUrl(m[1])}`;
-                                const fullHeaders: Record<string, string> = {
-                                    "User-Agent": USER_AGENT,
-                                    "Accept": "text/html,image/*,*/*",
-                                };
-                                if (cookies) fullHeaders["Cookie"] = cookies;
-
-                                const fullRes = await fetch(fullUrl, { headers: fullHeaders, redirect: "follow" });
-                                if (fullRes.ok) {
-                                    const ct = fullRes.headers.get("content-type") || "";
-                                    if (ct.startsWith("image/")) {
-                                        pageImages.push(fullRes.url);
-                                    } else {
-                                        const fullHtml = await fullRes.text();
-                                        const directPattern = /<img[^>]+src=["'](https?:\/\/scontent[^"']+)["']/gi;
-                                        while ((m = directPattern.exec(fullHtml)) !== null) {
-                                            pageImages.push(decodeEscapedUrl(m[1]));
-                                        }
-                                    }
-                                }
-                            } catch { /* ignore */ }
-                        }
-
-                        // Return the LARGEST image from this photo page
-                        // (the photo page usually has the post photo + smaller profile pics)
-                        if (pageImages.length > 0) {
-                            // Pick the image that's most likely the full photo (largest URL, most params)
-                            const bestImage = pageImages.reduce((best, img) => {
-                                // Prefer images without small size indicators
-                                const bestHasSize = /(?:s|p)\d+x\d+/.test(best);
-                                const imgHasSize = /(?:s|p)\d+x\d+/.test(img);
-                                if (!imgHasSize && bestHasSize) return img;
-                                if (imgHasSize && !bestHasSize) return best;
-                                // Prefer longer URLs (they tend to have more CDN params = original)
-                                return img.length > best.length ? img : best;
-                            });
-                            return [bestImage];
-                        }
-
-                        return pageImages;
-                    } catch {
-                        return [];
-                    }
-                })
+                batch.map(pageUrl => fetchAllImagesFromPhotoPage(pageUrl, cookies))
             );
 
             for (const res of results) {
@@ -881,18 +831,72 @@ async function extractMbasicPhotos(url: string, cookies: string): Promise<{
                             result.images.push(img);
                         }
                     }
+                    allPageImages.push(...res.value);
                 }
             }
         }
+
+        console.log(`[fb-photo] mbasic: collected ${result.images.length} images from ${photoLinks.length} photo pages`);
     }
 
-    // If no individual photo pages were found, use the direct images from the post page
+    // If fetching individual photo pages found nothing, fall back to direct post-page images
     if (result.images.length === 0 && directImages.length > 0) {
+        console.log(`[fb-photo] mbasic: falling back to ${directImages.length} direct images`);
         result.images = directImages;
     }
 
     console.log(`[fb-photo] mbasic total: ${result.images.length} photos`);
     return result;
+}
+
+// ─── Mobile share/p/ resolver ─────────────────────────────────────────────────
+/**
+ * FIX: Handle mobile browsers visiting share/p/ links.
+ *
+ * When a mobile browser opens https://facebook.com/share/p/XXXX, Facebook
+ * redirects to the app or a mobile login page. We bypass this by:
+ * 1. Fetching with a desktop User-Agent (forces HTML response)
+ * 2. OR fetching via mbasic.facebook.com (always returns HTML)
+ *
+ * This function is called from the API route, not here directly — but we
+ * improve robustness by making mbasic the primary strategy for share/p/ links.
+ */
+async function resolveShareLink(url: string, cookies: string): Promise<string> {
+    // Always convert share/p/ to mbasic first — it's the most reliable
+    const mbasicUrl = url
+        .replace(/^https?:\/\/(www\.)?facebook\.com/, "https://mbasic.facebook.com")
+        .replace(/^https?:\/\/m\.facebook\.com/, "https://mbasic.facebook.com");
+
+    try {
+        const headers: Record<string, string> = {
+            "User-Agent": USER_AGENT, // Desktop UA — avoids app redirect
+            "Accept": "text/html",
+        };
+        if (cookies) headers["Cookie"] = cookies;
+
+        const res = await fetch(mbasicUrl, { headers, redirect: "follow" });
+        const finalUrl = res.url;
+        const html = await res.text();
+
+        console.log(`[fb-photo] resolveShareLink: ${finalUrl.substring(0, 100)}, ${html.length} bytes`);
+
+        if (!isLoginUrl(finalUrl) && html.length > 5000 && !html.includes("login_form")) {
+            return finalUrl; // mbasic loaded the post directly
+        }
+
+        // Login wall — try to extract IDs
+        if (isLoginUrl(finalUrl)) {
+            const ids = extractIdsFromLoginRedirect(finalUrl);
+            if (ids) {
+                return `https://mbasic.facebook.com/story.php?story_fbid=${ids.storyFbid}&id=${ids.ownerId}`;
+            }
+        }
+    } catch (err) {
+        console.error("[fb-photo] resolveShareLink mbasic failed:", err instanceof Error ? err.message : err);
+    }
+
+    // Fallback: standard resolver
+    return resolveUrl(url, cookies);
 }
 
 // ─── Main scraper ─────────────────────────────────────────────────────────────
@@ -906,101 +910,105 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
     let title = "Facebook Post";
     let uploader = "Facebook User";
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // STRATEGY 1: Desktop page WITHOUT cookies (cleanest — public posts)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    let needsAuth = false;
-    try {
-        console.log("[fb-photo] Strategy 1: Desktop page (no cookies)");
-        const { html } = await fetchPage(url, {});
-        console.log(`[fb-photo] Desktop page: ${html.length} bytes`);
+    // ─── FAST PATH: share/p/ links → go straight to mbasic ─────────────────
+    // share/p/ URLs on desktop redirect to the post, but on mobile they redirect
+    // to the app or login page. Using mbasic always works reliably from a server.
+    const isShareLink = /facebook\.com\/share\/p\//i.test(url);
 
-        // Check for login wall
-        const hasContent = html.includes("og:image") || html.includes("scontent");
-        const isLoginWall = html.length < 50000 && !hasContent && (
-            html.includes("login_form") || html.includes("You must log in")
-        );
+    if (isShareLink) {
+        console.log("[fb-photo] Detected share/p/ link — using mbasic fast path");
+        try {
+            const resolvedMbasicUrl = await resolveShareLink(url, cookies);
+            console.log(`[fb-photo] Resolved share link to: ${resolvedMbasicUrl.substring(0, 100)}`);
 
-        if (isLoginWall) {
-            console.log("[fb-photo] Desktop page: login wall → needs auth");
-            needsAuth = true;
-        } else {
-            // Extract images from the clean page
-            const subImages = extractSubattachmentImages(html);
-            const ogImages = extractOgImages(html).filter(img => img.includes("scontent"));
-
-            if (subImages.length > 0) {
-                // Subattachment data found — most reliable
-                for (const img of subImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
-                }
-                for (const img of ogImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
-                }
-                console.log(`[fb-photo] Desktop: ${subImages.length} subattachment + ${ogImages.length} OG`);
-            } else {
-                // No subattachment data — use script extraction (safe on unauthenticated pages)
-                const scriptImages = extractScriptImages(html);
-                for (const img of ogImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
-                }
-                for (const img of scriptImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
-                }
-                console.log(`[fb-photo] Desktop: ${ogImages.length} OG + ${scriptImages.length} script`);
+            const mbasicResult = await extractMbasicPhotos(resolvedMbasicUrl, cookies);
+            if (mbasicResult.images.length > 0) {
+                allImages = mbasicResult.images;
+                title = mbasicResult.title;
+                uploader = mbasicResult.uploader;
+                console.log(`[fb-photo] share/p/ mbasic fast path: ${allImages.length} photos`);
             }
-
-            title = extractTitle(html);
-            uploader = extractUploader(html);
-        }
-    } catch (err) {
-        if (err instanceof Error && err.message.startsWith("LOGIN_REDIRECT")) {
-            console.log("[fb-photo] Login redirect → needs auth");
-            needsAuth = true;
-
-            // Try to extract story_fbid and id from the login redirect URL
-            // The redirect URL looks like: /login/?next=https://...story.php?story_fbid=XXX&id=YYY
-            const loginRedirectUrl = err.message.split("LOGIN_REDIRECT:")[1] || "";
-            if (loginRedirectUrl) {
-                const ids = extractIdsFromLoginRedirect(loginRedirectUrl);
-                if (ids) {
-                    console.log(`[fb-photo] Extracted story IDs from login redirect: fbid=${ids.storyFbid}, owner=${ids.ownerId}`);
-                    // Try fetching the mbasic post page directly with these IDs
-                    try {
-                        const directMbasicUrl = `https://mbasic.facebook.com/story.php?story_fbid=${ids.storyFbid}&id=${ids.ownerId}`;
-                        const mbasicResult = await extractMbasicPhotos(directMbasicUrl, cookies);
-                        if (mbasicResult.images.length > 0) {
-                            allImages = mbasicResult.images;
-                            title = mbasicResult.title;
-                            uploader = mbasicResult.uploader;
-                            console.log(`[fb-photo] Direct mbasic from login redirect: ${mbasicResult.images.length} photos`);
-                            // Skip Strategy 2 since we already got results
-                            needsAuth = false;
-                        }
-                    } catch (mbasicErr) {
-                        console.error("[fb-photo] Direct mbasic from login redirect failed:", mbasicErr instanceof Error ? mbasicErr.message : mbasicErr);
-                    }
-                }
-            }
-        } else {
-            console.error("[fb-photo] Desktop strategy failed:", err instanceof Error ? err.message : err);
+        } catch (err) {
+            console.error("[fb-photo] share/p/ fast path failed:", err instanceof Error ? err.message : err);
         }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // STRATEGY 2: mbasic.facebook.com WITH cookies
-    //
-    // Used when:
-    //   a) Post requires authentication (login redirect / private post)
-    //   b) Strategy 1 found fewer than 2 photos (might be incomplete)
-    //
-    // WHY mbasic instead of www with cookies?
-    //   www.facebook.com with cookies returns the ENTIRE news feed,
-    //   sidebar, and suggested posts — all full of scontent images.
-    //   This causes random/unrelated photos to appear.
-    //
-    //   mbasic.facebook.com returns ONLY the target post content.
-    //   Clean, simple HTML with no news feed pollution.
+    // STRATEGY 1: Desktop page WITHOUT cookies (for non-share links or as fallback)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let needsAuth = false;
+    if (!isShareLink || allImages.length === 0) {
+        try {
+            console.log("[fb-photo] Strategy 1: Desktop page (no cookies)");
+            const { html } = await fetchPage(url, {});
+            console.log(`[fb-photo] Desktop page: ${html.length} bytes`);
+
+            const hasContent = html.includes("og:image") || html.includes("scontent");
+            const isLoginWall = html.length < 50000 && !hasContent && (
+                html.includes("login_form") || html.includes("You must log in")
+            );
+
+            if (isLoginWall) {
+                console.log("[fb-photo] Desktop page: login wall → needs auth");
+                needsAuth = true;
+            } else {
+                const subImages = extractSubattachmentImages(html);
+                const ogImages = extractOgImages(html).filter(img => img.includes("scontent"));
+
+                if (subImages.length > 0) {
+                    for (const img of subImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    for (const img of ogImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    console.log(`[fb-photo] Desktop: ${subImages.length} subattachment + ${ogImages.length} OG`);
+                } else {
+                    const scriptImages = extractScriptImages(html);
+                    for (const img of ogImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    for (const img of scriptImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    console.log(`[fb-photo] Desktop: ${ogImages.length} OG + ${scriptImages.length} script`);
+                }
+
+                title = extractTitle(html);
+                uploader = extractUploader(html);
+            }
+        } catch (err) {
+            if (err instanceof Error && err.message.startsWith("LOGIN_REDIRECT")) {
+                console.log("[fb-photo] Login redirect → needs auth");
+                needsAuth = true;
+
+                const loginRedirectUrl = err.message.split("LOGIN_REDIRECT:")[1] || "";
+                if (loginRedirectUrl) {
+                    const ids = extractIdsFromLoginRedirect(loginRedirectUrl);
+                    if (ids) {
+                        try {
+                            const directMbasicUrl = `https://mbasic.facebook.com/story.php?story_fbid=${ids.storyFbid}&id=${ids.ownerId}`;
+                            const mbasicResult = await extractMbasicPhotos(directMbasicUrl, cookies);
+                            if (mbasicResult.images.length > 0) {
+                                allImages = mbasicResult.images;
+                                title = mbasicResult.title;
+                                uploader = mbasicResult.uploader;
+                                needsAuth = false;
+                            }
+                        } catch (mbasicErr) {
+                            console.error("[fb-photo] Direct mbasic from login redirect failed:", mbasicErr instanceof Error ? mbasicErr.message : mbasicErr);
+                        }
+                    }
+                }
+            } else {
+                console.error("[fb-photo] Desktop strategy failed:", err instanceof Error ? err.message : err);
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // STRATEGY 2: mbasic WITH cookies (when auth needed or too few photos found)
+    // We use < 2 as the threshold because some posts have multiple photos
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if ((needsAuth || allImages.length < 2) && cookies) {
         try {
@@ -1009,12 +1017,9 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
 
             if (mbasicResult.images.length > 0) {
                 if (needsAuth) {
-                    // Auth was required — mbasic results are primary, replace any desktop results
                     allImages = mbasicResult.images;
                     console.log(`[fb-photo] mbasic (primary): ${mbasicResult.images.length} photos`);
                 } else {
-                    // Desktop found some photos but mbasic might have more
-                    // Merge, preferring mbasic images
                     for (const img of mbasicResult.images) {
                         if (!allImages.includes(img)) allImages.push(img);
                     }
@@ -1030,11 +1035,33 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // STRATEGY 3: Mobile page (last resort)
+    // STRATEGY 3: mbasic WITHOUT cookies (for share/p/ with no auth)
+    // This specifically helps mobile browser share links
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    if (allImages.length === 0 || (isShareLink && allImages.length < 2)) {
+        try {
+            console.log("[fb-photo] Strategy 3: mbasic without cookies");
+            const mbasicResult = await extractMbasicPhotos(url, "");
+
+            if (mbasicResult.images.length > 0) {
+                for (const img of mbasicResult.images) {
+                    if (!allImages.includes(img)) allImages.push(img);
+                }
+                console.log(`[fb-photo] mbasic (no-auth): ${mbasicResult.images.length} photos, total: ${allImages.length}`);
+                if (title === "Facebook Post") title = mbasicResult.title;
+                if (uploader === "Facebook User") uploader = mbasicResult.uploader;
+            }
+        } catch (err) {
+            console.error("[fb-photo] mbasic (no-auth) strategy failed:", err instanceof Error ? err.message : err);
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // STRATEGY 4: Mobile page (last resort)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     if (allImages.length === 0) {
         try {
-            console.log("[fb-photo] Strategy 3: Mobile page");
+            console.log("[fb-photo] Strategy 4: Mobile page");
             const mobileUrl = url.replace("www.facebook.com", "m.facebook.com");
             const { html: mobileHtml } = await fetchPage(mobileUrl, {
                 mobile: true,
@@ -1064,7 +1091,7 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     console.log(`[fb-photo] Total before filtering: ${allImages.length}`);
 
-    // Filter out tiny images
+    // Filter out tiny images (< 150px max dimension)
     const filtered = allImages.filter(img => {
         if (!img.includes("fbcdn.net") && !img.includes("scontent")) return false;
         const stpMatch = img.match(/stp=[^&]*/);
