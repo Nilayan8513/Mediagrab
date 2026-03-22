@@ -29,6 +29,9 @@ const ALLOWED_DOMAINS = [
     "ton.twitter.com",
     "facebook.com",
     "fbcdn",
+    // YouTube CDN
+    "googlevideo.com",
+    "ytimg.com",
 ];
 
 function isAllowedUrl(url: string): boolean {
@@ -75,6 +78,8 @@ export async function GET(request: NextRequest) {
             headers["Referer"] = "https://www.instagram.com/";
         } else if (targetUrl.includes("fbcdn") || targetUrl.includes("facebook.com")) {
             headers["Referer"] = "https://www.facebook.com/";
+        } else if (targetUrl.includes("googlevideo.com") || targetUrl.includes("ytimg.com")) {
+            headers["Referer"] = "https://www.youtube.com/";
         }
 
         // Forward Range header for resumable/parallel chunk downloads

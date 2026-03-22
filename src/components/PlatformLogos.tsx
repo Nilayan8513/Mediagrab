@@ -53,6 +53,7 @@ export function FacebookLogo({ size = 18, className }: LogoProps) {
 
 export function PlatformLogo({ platform, size = 18 }: { platform: string; size?: number }) {
     switch (platform) {
+        case "youtube": return <YouTubeLogo size={size} />;
         case "instagram": return <InstagramLogo size={size} />;
         case "twitter": return <XLogo size={size} />;
         case "facebook": return <FacebookLogo size={size} />;
