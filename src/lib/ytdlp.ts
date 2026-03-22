@@ -52,17 +52,12 @@ function shouldUseCookies(platform: Platform): boolean {
 // ─── Platform Detection ───────────────────────────────────────────────────────
 
 export type Platform =
-  | "youtube"
   | "instagram"
   | "twitter"
   | "facebook"
   | "unknown";
 
 const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
-  {
-    platform: "youtube",
-    regex: /(?:(?:youtube\.com\/(?:watch|shorts|embed|v|live))|(?:youtu\.be\/)|(?:music\.youtube\.com\/watch))/i,
-  },
   {
     platform: "instagram",
     regex: /(?:instagram\.com\/(?:p|reel|reels|tv)\/)/i,
@@ -211,77 +206,8 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
     return await analyzeFacebook(url);
   }
 
-  // ── YouTube ──
-  if (platform === "youtube") {
-    const result = await analyzeWithYtDlp(url, "youtube");
-
-    // ── Duration limit: 30 minutes ──
-    for (const item of result.items) {
-      if (item.duration && item.duration > 1800) {
-        throw new Error(
-          `This video is ${Math.round(item.duration / 60)} minutes long. ` +
-          `Only videos up to 30 minutes are supported to keep downloads fast and reliable.`
-        );
-      }
-    }
-
-    // ── Quality cleanup: cap at 1080p, show clean standard pills ──
-    const ALLOWED_LABELS = new Set(["1080p", "720p", "360p", "240p"]);
-
-    for (const item of result.items) {
-      if (item.type !== "video" || item.formats.length === 0) continue;
-
-      console.log(`[youtube] Before cleanup: ${item.formats.length} formats → ${item.formats.map(f => f.quality + '(' + f.height + ')').join(', ')}`);
-
-      // Step 1: Get effective height for each format (some have null height)
-      function getHeight(f: MediaFormat): number {
-        if (f.height && f.height > 0) return f.height;
-        // Try to parse from quality label: "1440p" → 1440, "4K" → 2160
-        const m = f.quality.match(/(\d+)p/i);
-        if (m) return parseInt(m[1], 10);
-        if (/4k/i.test(f.quality)) return 2160;
-        if (/8k/i.test(f.quality)) return 4320;
-        // Try resolution field: "2560x1440" → 1440
-        if (f.resolution) {
-          const rm = f.resolution.match(/(\d+)x(\d+)/);
-          if (rm) return parseInt(rm[2], 10);
-        }
-        return 0;
-      }
-
-      // Step 2: Remove 4K / 8K (height > 1500)
-      item.formats = item.formats.filter(f => getHeight(f) <= 1500);
-
-      // Step 3: Re-label to standard quality names
-      for (const f of item.formats) {
-        const h = getHeight(f);
-        if (h >= 1400) f.quality = "1440p";
-        else if (h >= 1000) f.quality = "1080p";
-        else if (h >= 700) f.quality = "720p";
-        else if (h >= 440) f.quality = "480p";
-        else if (h >= 340) f.quality = "360p";
-        else if (h >= 220) f.quality = "240p";
-      }
-
-      // Step 4: Deduplicate — keep first (best) per label
-      const seen = new Set<string>();
-      item.formats = item.formats.filter(f => {
-        if (seen.has(f.quality)) return false;
-        seen.add(f.quality);
-        return true;
-      });
-
-      // Step 5: Keep only the allowed labels
-      item.formats = item.formats.filter(f => ALLOWED_LABELS.has(f.quality));
-
-      console.log(`[youtube] After cleanup: ${item.formats.map(f => f.quality).join(', ')}`);
-    }
-
-    return result;
-  }
-
   throw new Error(
-    "Unsupported platform. We support YouTube, Instagram, Twitter/X, and Facebook."
+    "Unsupported platform. We support Instagram, Twitter/X, and Facebook."
   );
 }
 

@@ -11,11 +11,11 @@ const sora = Sora({
 export const metadata: Metadata = {
   title: "MediaGrab — Download from Any Platform",
   description:
-    "Download videos, reels, and photos from YouTube, Instagram, Twitter/X, and Facebook. Free, fast, and private.",
-  keywords: ["social media downloader", "youtube downloader", "instagram downloader", "twitter downloader", "facebook downloader"],
+    "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook. Free, fast, and private.",
+  keywords: ["social media downloader", "instagram downloader", "twitter downloader", "facebook downloader"],
   openGraph: {
     title: "MediaGrab — Download from Any Platform",
-    description: "Download videos, reels, and photos from YouTube, Instagram, Twitter/X, and Facebook.",
+    description: "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.",
     type: "website",
   },
 };

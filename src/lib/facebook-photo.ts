@@ -295,20 +295,64 @@ function extractOgImages(html: string): string[] {
     return images;
 }
 
+// ─── Robust post-ID extraction ────────────────────────────────────────────────
+
+/**
+ * Extract Facebook post/photo IDs from a URL.
+ * These IDs let us identify which JSON blocks in the page belong to THIS post,
+ * so we don't accidentally scrape images from the news feed or sidebar.
+ */
+function extractPostIdentifiers(url: string): string[] {
+    const ids: string[] = [];
+
+    // /posts/pfbid... or /posts/12345
+    const postsMatch = url.match(/\/posts\/([a-zA-Z0-9]+)/);
+    if (postsMatch) ids.push(postsMatch[1]);
+
+    // /photo/?fbid=12345
+    const fbidMatch = url.match(/[?&]fbid=(\d+)/);
+    if (fbidMatch) ids.push(fbidMatch[1]);
+
+    // /photo.php?fbid=12345
+    const phpFbidMatch = url.match(/photo\.php\?fbid=(\d+)/);
+    if (phpFbidMatch) ids.push(phpFbidMatch[1]);
+
+    // /photos/a.12345/67890
+    const photosMatch = url.match(/\/photos\/[^/]+\/(\d+)/);
+    if (photosMatch) ids.push(photosMatch[1]);
+
+    // /share/p/XXXXX
+    const shareMatch = url.match(/\/share\/p\/([a-zA-Z0-9]+)/);
+    if (shareMatch) ids.push(shareMatch[1]);
+
+    // permalink.php?story_fbid=12345
+    const storyMatch = url.match(/story_fbid=(\d+)/);
+    if (storyMatch) ids.push(storyMatch[1]);
+
+    // story.php?story_fbid=12345 or id=12345
+    const storyPhpMatch = url.match(/story\.php\?.*?(?:story_fbid|id)=(\d+)/);
+    if (storyPhpMatch) ids.push(storyPhpMatch[1]);
+
+    return [...new Set(ids)];
+}
+
 /**
  * Extract photos from Facebook's structured Relay/Comet JSON data.
  * Facebook stores multi-photo post data in "subattachments" or
  * "all_subattachments" nodes. Each node contains the photo's URI.
- * This is the most reliable way to get ALL post photos.
+ *
+ * IMPROVED: Now also searches for "edges" arrays with "node" objects,
+ * which is the alternate format Facebook uses on AWS/server IPs.
  */
 function extractSubattachmentImages(html: string): string[] {
     const images: string[] = [];
     const seen = new Set<string>();
 
-    // Strategy 1: Look for subattachment image URIs
-    // Facebook's Relay data has: "subattachments":{"nodes":[{"media":{"image":{"uri":"..."}}}]}
-    // or "all_subattachments":{"nodes":[...]}
-    // The image URIs appear near "subattachment" keys
+    // Strategy 1: Look for subattachment image URIs in Relay data
+    // Facebook's Relay data has multiple formats:
+    //   {"subattachments":{"nodes":[{"media":{"image":{"uri":"..."}}}]}}
+    //   {"all_subattachments":{"nodes":[...]}}
+    //   {"subattachments":{"edges":[{"node":{"media":{"image":{"uri":"..."}}}}]}}
     const subPattern = /"(?:sub_?attachments|all_sub_?attachments)"\s*:\s*\{"(?:nodes|edges)"\s*:\s*\[(.*?)\]\s*\}/gi;
     let match;
     while ((match = subPattern.exec(html)) !== null) {
@@ -325,9 +369,8 @@ function extractSubattachmentImages(html: string): string[] {
         }
     }
 
-    // Strategy 2: Look for photo attachment media data
+    // Strategy 2: Look for photo attachment media data with dimensions
     // Pattern: "media":{..."image":{"uri":"https://scontent...",..."width":X,"height":Y}}
-    // These appear grouped together for the post's photos
     const mediaPattern = /"media"\s*:\s*\{[^}]*?"image"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"[^}]*?"(?:width|height)"\s*:\s*(\d+)/gi;
     while ((match = mediaPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
@@ -352,6 +395,28 @@ function extractSubattachmentImages(html: string): string[] {
     // Strategy 4: Look for viewer_image / large image patterns
     const viewerPattern = /"(?:viewer_image|large_share_image|full_image|attached_photo)"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
     while ((match = viewerPattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    // Strategy 5: Facebook's newer Comet/Relay format — look for
+    // "blurred_image"/"image" pairs near "accessibility_caption"
+    // (these are the actual post photos and always have captions)
+    const cometPattern = /"image"\s*:\s*\{"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"[^}]*?\}[^}]*?"accessibility_caption"/gi;
+    while ((match = cometPattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    // Strategy 6: "currMedia"/"photo" nodes — used in Facebook photo viewer data
+    const currMediaPattern = /"(?:currMedia|photo)"\s*:\s*\{[^}]*?"(?:image|photo_image|viewer_image)"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+    while ((match = currMediaPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
         if (!seen.has(decoded) && isPostPhoto(decoded)) {
             seen.add(decoded);
@@ -412,7 +477,21 @@ async function extractMbasicPhotos(url: string): Promise<string[]> {
 
     console.log(`[fb-photo] mbasic: fetching ${mbasicUrl}`);
 
-    const { html } = await fetchFacebookPage(mbasicUrl, false);
+    const cookies = getCachedFacebookCookies();
+    const headers: Record<string, string> = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    };
+    if (cookies) {
+        headers["Cookie"] = cookies;
+    }
+
+    const response = await fetch(mbasicUrl, { headers, redirect: "follow" });
+    if (!response.ok) {
+        throw new Error(`mbasic returned ${response.status}`);
+    }
+    const html = await response.text();
     console.log(`[fb-photo] mbasic: ${html.length} bytes`);
 
     // Check for error page (mbasic doesn't support pfbid URLs)
@@ -427,7 +506,7 @@ async function extractMbasicPhotos(url: string): Promise<string[]> {
         return images;
     }
 
-    // Extract direct image URLs
+    // Extract direct image URLs from <img> tags
     const imgPattern = /<img[^>]+src=["'](https?:\/\/scontent[^"']+)["'][^>]*>/gi;
     const seen = new Set<string>();
     let match;
@@ -471,7 +550,16 @@ async function extractMbasicPhotos(url: string): Promise<string[]> {
         const results = await Promise.allSettled(
             batch.map(async (pageUrl) => {
                 try {
-                    const { html: photoHtml } = await fetchFacebookPage(pageUrl, false);
+                    const pageHeaders: Record<string, string> = {
+                        "User-Agent": USER_AGENT,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    };
+                    if (cookies) pageHeaders["Cookie"] = cookies;
+
+                    const res = await fetch(pageUrl, { headers: pageHeaders, redirect: "follow" });
+                    if (!res.ok) return [];
+                    const photoHtml = await res.text();
+
                     const pageImages: string[] = [];
 
                     // Find images in the photo page
@@ -492,8 +580,14 @@ async function extractMbasicPhotos(url: string): Promise<string[]> {
                     while ((m = fullSizePattern.exec(photoHtml)) !== null) {
                         try {
                             const fullUrl = `https://mbasic.facebook.com${decodeEscapedUrl(m[1])}`;
+                            const fullHeaders: Record<string, string> = {
+                                "User-Agent": USER_AGENT,
+                                "Accept": "text/html,image/*,*/*",
+                            };
+                            if (cookies) fullHeaders["Cookie"] = cookies;
+
                             const fullRes = await fetch(fullUrl, {
-                                headers: { "User-Agent": USER_AGENT, "Accept": "text/html,image/*,*/*" },
+                                headers: fullHeaders,
                                 redirect: "follow",
                             });
                             if (fullRes.ok) {
@@ -630,8 +724,42 @@ async function tryUpgradeResolution(imageUrl: string): Promise<string> {
 }
 
 /**
+ * Extract the unique "photo hash" from a Facebook CDN URL.
+ *
+ * Facebook CDN URLs look like:
+ *   https://scontent-xxx.xx.fbcdn.net/v/t39.30808-6/123456789_12345678901234_1234567890123456789_n.jpg?...
+ *
+ * The unique part is the numeric filename: "123456789_12345678901234_1234567890123456789_n"
+ * Different resolution versions of the SAME photo share these same numeric IDs.
+ *
+ * Two genuinely different photos will always have different numeric IDs.
+ */
+function getPhotoFingerprint(url: string): string {
+    try {
+        const parsed = new URL(url);
+        const pathParts = parsed.pathname.split("/");
+        const filename = pathParts[pathParts.length - 1] || "";
+
+        // Extract the numeric ID sequence before the suffix letter
+        // e.g. "123456789_12345678901234_1234567890123456789_n.jpg" → extract the long numeric IDs
+        const idMatch = filename.match(/(\d{5,}_\d{5,})/);
+        if (idMatch) return idMatch[1];
+
+        // If the filename doesn't match the expected multi-ID pattern,
+        // use the whole filename without extension as the fingerprint
+        return filename.replace(/\.[^.]+$/, "");
+    } catch {
+        return url;
+    }
+}
+
+/**
  * Deduplicate images, keeping the highest resolution version of each unique photo.
- * Groups URLs by their base filename and picks the best from each group.
+ * Groups URLs by their photo fingerprint (unique numeric IDs in the filename).
+ *
+ * IMPORTANT: This is more conservative than the old version — it only groups images
+ * that are genuinely the SAME photo at different resolutions, not different photos
+ * that happen to have similar filenames.
  */
 function deduplicateImages(urls: string[]): string[] {
     if (urls.length <= 1) return urls;
@@ -639,49 +767,41 @@ function deduplicateImages(urls: string[]): string[] {
     const groups = new Map<string, { url: string; score: number }[]>();
 
     for (const url of urls) {
-        try {
-            const parsed = new URL(url);
-            const pathParts = parsed.pathname.split("/");
-            const filename = pathParts[pathParts.length - 1] || "";
-            // Group by filename without resolution suffix
-            const baseKey = filename.replace(/_[a-z](?=\.)/i, "");
+        const fingerprint = getPhotoFingerprint(url);
 
-            if (!groups.has(baseKey)) groups.set(baseKey, []);
+        if (!groups.has(fingerprint)) groups.set(fingerprint, []);
 
-            // Score: higher = better resolution
-            let score = 0;
+        // Score: higher = better resolution
+        let score = 0;
 
-            // Size hints in stp parameter
-            const stpMatch = url.match(/stp=[^&]*/);
-            if (stpMatch) {
-                const stp = stpMatch[0];
-                const dimMatch = stp.match(/(?:p|s)(\d+)x(\d+)/);
-                if (dimMatch) {
-                    score = parseInt(dimMatch[1]) * parseInt(dimMatch[2]);
-                } else if (!stp.includes("_p") && !stp.includes("_s")) {
-                    // No size constraint in stp = likely original → highest score
-                    score = 10_000_000;
-                }
-            } else {
-                // No stp parameter at all = original
+        // Size hints in stp parameter
+        const stpMatch = url.match(/stp=[^&]*/);
+        if (stpMatch) {
+            const stp = stpMatch[0];
+            const dimMatch = stp.match(/(?:p|s)(\d+)x(\d+)/);
+            if (dimMatch) {
+                score = parseInt(dimMatch[1]) * parseInt(dimMatch[2]);
+            } else if (!stp.includes("_p") && !stp.includes("_s")) {
+                // No size constraint in stp = likely original → highest score
                 score = 10_000_000;
             }
-
-            // cstp=mx1080x1920 means max 1080x1920
-            const cstpMatch = url.match(/cstp=mx(\d+)x(\d+)/);
-            if (cstpMatch) {
-                score = Math.max(score, parseInt(cstpMatch[1]) * parseInt(cstpMatch[2]));
-            }
-
-            // _o suffix = original
-            if (url.includes("_o.")) score = Math.max(score, 5_000_000);
-            // _n suffix = normal
-            if (url.includes("_n.")) score = Math.max(score, 1_000_000);
-
-            groups.get(baseKey)!.push({ url, score });
-        } catch {
-            groups.set(url, [{ url, score: 0 }]);
+        } else {
+            // No stp parameter at all = original
+            score = 10_000_000;
         }
+
+        // cstp=mx1080x1920 means max 1080x1920
+        const cstpMatch = url.match(/cstp=mx(\d+)x(\d+)/);
+        if (cstpMatch) {
+            score = Math.max(score, parseInt(cstpMatch[1]) * parseInt(cstpMatch[2]));
+        }
+
+        // _o suffix = original
+        if (url.includes("_o.")) score = Math.max(score, 5_000_000);
+        // _n suffix = normal
+        if (url.includes("_n.")) score = Math.max(score, 1_000_000);
+
+        groups.get(fingerprint)!.push({ url, score });
     }
 
     const result: string[] = [];
@@ -693,15 +813,86 @@ function deduplicateImages(urls: string[]): string[] {
     return result;
 }
 
+// ─── Context-aware extraction from Relay JSON ─────────────────────────────────
+
+/**
+ * Try to extract post photos by finding the JSON data blob that corresponds
+ * to THIS specific post. Facebook puts multiple JSON blobs in the HTML,
+ * and we need to find the one for the target post.
+ *
+ * Key insight: In the HTML, there are script tags containing serialized
+ * Relay data. The post's data blob contains a "creation_story" or "comet_sections"
+ * node with the post's photos. We look for the blob that contains one of our
+ * post IDs, then extract images ONLY from that blob.
+ */
+function extractPostPhotosFromRelayData(html: string, postIds: string[]): string[] {
+    const images: string[] = [];
+    const seen = new Set<string>();
+
+    // Find all JSON-like data blobs in script tags
+    // Facebook embeds multiple Relay data blobs in the page
+    const scriptPattern = /<script[^>]*>(\{[\s\S]*?"__typename"\s*:\s*"[^"]*"[\s\S]*?\})<\/script>/gi;
+    let scriptMatch;
+
+    while ((scriptMatch = scriptPattern.exec(html)) !== null) {
+        const blob = scriptMatch[1];
+
+        // Check if this blob contains any of our post IDs
+        const isTargetPost = postIds.length === 0 || postIds.some(id => blob.includes(id));
+        if (!isTargetPost) continue;
+
+        // Extract images from this specific blob
+        const uriPattern = /"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+        let uriMatch;
+        while ((uriMatch = uriPattern.exec(blob)) !== null) {
+            const decoded = decodeEscapedUrl(uriMatch[1]);
+            if (!seen.has(decoded) && isPostPhoto(decoded)) {
+                seen.add(decoded);
+                images.push(decoded);
+            }
+        }
+    }
+
+    // Also look for Relay data inside the larger HTML content (not in script tags)
+    // Facebook sometimes inlines data in data-content-len or __relay_serialize attributes
+    if (images.length === 0 && postIds.length > 0) {
+        // Find the area of HTML around the post ID mention, and extract images from there
+        for (const postId of postIds) {
+            const idx = html.indexOf(postId);
+            if (idx === -1) continue;
+
+            // Get a generous window around the post ID (200KB each side)
+            const start = Math.max(0, idx - 200_000);
+            const end = Math.min(html.length, idx + 200_000);
+            const window = html.substring(start, end);
+
+            const winUriPattern = /"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+            let winMatch;
+            while ((winMatch = winUriPattern.exec(window)) !== null) {
+                const decoded = decodeEscapedUrl(winMatch[1]);
+                if (!seen.has(decoded) && isPostPhoto(decoded)) {
+                    seen.add(decoded);
+                    images.push(decoded);
+                }
+            }
+        }
+    }
+
+    console.log(`[fb-photo] Relay data extraction: ${images.length} photos (postIds: ${postIds.join(",")})`);
+    return images;
+}
+
 // ─── Main scraper ─────────────────────────────────────────────────────────────
 
 export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
     console.log(`[fb-photo] Scraping photos from: ${url}`);
 
+    const postIds = extractPostIdentifiers(url);
+    console.log(`[fb-photo] Post identifiers: ${postIds.join(", ") || "(none)"}`);
+
     let allImages: string[] = [];
     let title = "Facebook Post";
     let uploader = "Facebook User";
-    let desktopHtml = "";
 
     // ── Strategy 1: Desktop page WITHOUT cookies ──
     // We do NOT send cookies first because authenticated pages include
@@ -731,8 +922,24 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
             }
         }
 
-        desktopHtml = html;
         console.log(`[fb-photo] Desktop page: ${html.length} bytes, cookies=${usedCookies}, final URL: ${finalUrl}`);
+
+        // Try to extract additional post IDs from the page content itself
+        // Facebook sometimes includes the canonical post ID in the page even for /share/ URLs
+        const fbidInPage = html.match(/"post_id"\s*:\s*"(\d+)"/);
+        if (fbidInPage && !postIds.includes(fbidInPage[1])) {
+            postIds.push(fbidInPage[1]);
+            console.log(`[fb-photo] Found post_id in page: ${fbidInPage[1]}`);
+        }
+        const storyFbid = html.match(/"story_fbid"\s*:\s*"?(\d+)/);
+        if (storyFbid && !postIds.includes(storyFbid[1])) {
+            postIds.push(storyFbid[1]);
+        }
+        // Also look for photo_id or fbid
+        const photoIdMatch = html.match(/"(?:photo_id|fbid)"\s*:\s*"?(\d+)/);
+        if (photoIdMatch && !postIds.includes(photoIdMatch[1])) {
+            postIds.push(photoIdMatch[1]);
+        }
 
         // Check for login wall
         const hasOgImage = html.includes("og:image");
@@ -748,35 +955,53 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
         } else {
             // Extract images using multiple strategies
 
-            // Priority 1: Subattachment data (most reliable for multi-photo posts)
-            const subImages = extractSubattachmentImages(html);
-
-            // Priority 2: OG images (always has the first photo)
-            const ogImages = extractOgImages(html);
-            const ogPostPhotos = ogImages.filter(img => img.includes("scontent"));
-
             if (usedCookies) {
                 // AUTHENTICATED PAGE — be very strict!
                 // The page includes the entire news feed. Only use:
-                // 1. Subattachment images (specifically from the post's JSON)
-                // 2. OG image (always the first post photo)
+                // 1. Relay data scoped to our post ID (most precise)
+                // 2. Subattachment images (specifically from the post's JSON)
+                // 3. OG image (always the first post photo)
                 // Do NOT use generic script image extraction
-                console.log(`[fb-photo] Authenticated page: ${subImages.length} subattachment, ${ogPostPhotos.length} OG`);
+                const relayImages = extractPostPhotosFromRelayData(html, postIds);
+                const subImages = extractSubattachmentImages(html);
+                const ogImages = extractOgImages(html);
+                const ogPostPhotos = ogImages.filter(img => img.includes("scontent"));
 
-                if (subImages.length > 0) {
+                console.log(`[fb-photo] Authenticated page: ${relayImages.length} relay, ${subImages.length} subattachment, ${ogPostPhotos.length} OG`);
+
+                if (relayImages.length > 0) {
+                    // Relay data is most reliable — use it
+                    for (const img of relayImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                } else if (subImages.length > 0) {
                     for (const img of subImages) {
                         if (!allImages.includes(img)) allImages.push(img);
                     }
                 }
+                // Always add OG images as they're confirmed to be from this post
                 for (const img of ogPostPhotos) {
                     if (!allImages.includes(img)) allImages.push(img);
                 }
             } else {
                 // UNAUTHENTICATED PAGE — cleaner, only has this post's data
-                const scriptImages = extractScriptImages(html);
-                console.log(`[fb-photo] Clean page: ${subImages.length} subattachment, ${ogPostPhotos.length} OG, ${scriptImages.length} script`);
+                // But we still prefer scoped extraction when possible
+                const relayImages = extractPostPhotosFromRelayData(html, postIds);
+                const subImages = extractSubattachmentImages(html);
+                const ogImages = extractOgImages(html);
+                const ogPostPhotos = ogImages.filter(img => img.includes("scontent"));
 
-                if (subImages.length > 0) {
+                console.log(`[fb-photo] Clean page: ${relayImages.length} relay, ${subImages.length} subattachment, ${ogPostPhotos.length} OG`);
+
+                if (relayImages.length > 0) {
+                    for (const img of relayImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    // Also add OG to make sure the first photo is included
+                    for (const img of ogPostPhotos) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                } else if (subImages.length > 0) {
                     for (const img of subImages) {
                         if (!allImages.includes(img)) allImages.push(img);
                     }
@@ -784,6 +1009,10 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
                         if (!allImages.includes(img)) allImages.push(img);
                     }
                 } else {
+                    // Fallback: use script images but only if no better data available
+                    const scriptImages = extractScriptImages(html);
+                    console.log(`[fb-photo] Fallback script extraction: ${scriptImages.length} images`);
+
                     for (const img of ogPostPhotos) {
                         if (!allImages.includes(img)) allImages.push(img);
                     }
@@ -862,9 +1091,9 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
         return true;
     });
 
-    // Deduplicate
+    // Deduplicate using photo fingerprints (groups same photo at different resolutions)
     const uniqueImages = deduplicateImages(filteredImages.length > 0 ? filteredImages : allImages);
-    console.log(`[fb-photo] After dedup: ${uniqueImages.length} unique images`);
+    console.log(`[fb-photo] After dedup: ${uniqueImages.length} unique images (fingerprints: ${uniqueImages.map(u => getPhotoFingerprint(u)).join(", ")})`);
 
     // Try to upgrade resolution for each image
     const upgradedImages = await Promise.all(

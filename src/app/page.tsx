@@ -486,7 +486,7 @@ export default function Home() {
           </h1>
 
           <p className="hero-sub">
-            Download videos, reels, and photos from YouTube, Instagram, Twitter/X, and Facebook.
+            Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.
             <br />
             <span className="hero-highlight">Free, fast, and instant.</span>
           </p>
@@ -519,7 +519,7 @@ export default function Home() {
             <div className="supported-strip animate-fade-up">
               <span className="supported-label">🌐 Supported:</span>
               {[
-                { key: "youtube",    name: "YouTube" },
+
                 { key: "instagram", name: "Instagram" },
                 { key: "twitter",   name: "X / Twitter" },
                 { key: "facebook",  name: "Facebook" },
