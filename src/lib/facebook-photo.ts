@@ -231,6 +231,7 @@ function isPostPhoto(url: string): boolean {
     if (url.includes("emoji") || url.includes("reaction")) return false;
     if (url.includes("/rsrc.php/")) return false;
     if (url.includes("static.xx.fbcdn.net/rsrc")) return false;
+    if (url.includes("external") && url.includes("fbcdn.net")) return false; // External/giphy
 
     // Profile pic path patterns (NOT post photos)
     if (url.includes("t39.30808-1/")) return false;  // Profile pictures
@@ -238,11 +239,18 @@ function isPostPhoto(url: string): boolean {
     if (url.includes("t1.6435-1/")) return false;     // Cover photos
     if (url.includes("t39.30808-0/")) return false;   // App icons
 
+    // Skip tiny sizes — profile pics are typically s24x24, s32x32, s40x40, s50x50
+    const stpMatch = url.match(/stp=[^&]*/);
+    if (stpMatch) {
+        const dimMatch = stpMatch[0].match(/(?:s|p)(\d+)x(\d+)/);
+        if (dimMatch) {
+            const maxDim = Math.max(parseInt(dimMatch[1]), parseInt(dimMatch[2]));
+            if (maxDim < 100) return false;
+        }
+    }
+
     // Post photos use t39.30808-6 — allow these
     if (url.includes("t39.30808-6/")) return true;
-
-    // Also allow other media types that could be post content
-    if (url.includes("t39.30808-")) return true;
 
     return false;
 }
@@ -291,47 +299,99 @@ function extractOgImages(html: string): string[] {
 }
 
 /**
- * Extract photo URLs from Facebook's inline Relay/Comet JSON data.
- * Facebook embeds image data in <script> tags as escaped JSON.
- *
- * Two URL formats exist in the HTML:
- *   1. Plain: https://scontent... (in meta tags, preload links)
- *   2. Escaped: https:\/\/scontent... (in JSON inside <script> tags)
- *
- * For multi-photo posts, the initial HTML MAY contain image data
- * for all photos (especially when fetched from server IPs / AWS).
+ * Extract photos from Facebook's structured Relay/Comet JSON data.
+ * Facebook stores multi-photo post data in "subattachments" or
+ * "all_subattachments" nodes. Each node contains the photo's URI.
+ * This is the most reliable way to get ALL post photos.
+ */
+function extractSubattachmentImages(html: string): string[] {
+    const images: string[] = [];
+    const seen = new Set<string>();
+
+    // Strategy 1: Look for subattachment image URIs
+    // Facebook's Relay data has: "subattachments":{"nodes":[{"media":{"image":{"uri":"..."}}}]}
+    // or "all_subattachments":{"nodes":[...]}
+    // The image URIs appear near "subattachment" keys
+    const subPattern = /"(?:sub_?attachments|all_sub_?attachments)"\s*:\s*\{"(?:nodes|edges)"\s*:\s*\[(.*?)\]\s*\}/gi;
+    let match;
+    while ((match = subPattern.exec(html)) !== null) {
+        const block = match[1];
+        // Extract all scontent URIs from this block
+        const uriPattern = /"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+        let uriMatch;
+        while ((uriMatch = uriPattern.exec(block)) !== null) {
+            const decoded = decodeEscapedUrl(uriMatch[1]);
+            if (!seen.has(decoded) && isPostPhoto(decoded)) {
+                seen.add(decoded);
+                images.push(decoded);
+            }
+        }
+    }
+
+    // Strategy 2: Look for photo attachment media data
+    // Pattern: "media":{..."image":{"uri":"https://scontent...",..."width":X,"height":Y}}
+    // These appear grouped together for the post's photos
+    const mediaPattern = /"media"\s*:\s*\{[^}]*?"image"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"[^}]*?"(?:width|height)"\s*:\s*(\d+)/gi;
+    while ((match = mediaPattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        const dim = parseInt(match[2]);
+        // Only include if dimension is reasonable (not a tiny preview)
+        if (dim > 100 && !seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    // Strategy 3: Look for "photo_image" objects with explicit large dimensions
+    const photoImagePattern = /"photo_image"\s*:\s*\{"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+    while ((match = photoImagePattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    // Strategy 4: Look for viewer_image / large image patterns
+    const viewerPattern = /"(?:viewer_image|large_share_image|full_image|attached_photo)"\s*:\s*\{[^}]*?"uri"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
+    while ((match = viewerPattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    console.log(`[fb-photo] Subattachment extraction: ${images.length} photos`);
+    return images;
+}
+
+/**
+ * Extract ALL scontent URLs from page as a fallback.
+ * This is less precise — it catches everything including profile pics.
+ * Only used when subattachment extraction finds nothing.
  */
 function extractScriptImages(html: string): string[] {
     const images: string[] = [];
     const seen = new Set<string>();
 
-    // Pattern 1: Escaped scontent URLs in JSON (e.g., "uri":"https:\/\/scontent...")
-    // Use \\\/ to match literal \/ in the HTML source
-    const escapedPattern = /https?:\\\/\\\/scontent[^"']+/gi;
+    // Only look for URI fields in JSON with explicit image keys
+    // This is more targeted than grabbing all scontent URLs
+    const uriPattern = /"(?:uri|image_uri|photo_image|viewer_image|image\.uri|large_share_image|baseUrl)"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
     let match;
-    while ((match = escapedPattern.exec(html)) !== null) {
-        const decoded = decodeEscapedUrl(match[0]);
-        if (!seen.has(decoded) && isHighResFacebookImage(decoded)) {
-            seen.add(decoded);
-            images.push(decoded);
-        }
-    }
-
-    // Pattern 2: Plain scontent URLs (in meta tags, preload links, etc.)
-    const plainPattern = /https?:\/\/scontent[^"'\s<>\\]+/gi;
-    while ((match = plainPattern.exec(html)) !== null) {
-        const decoded = decodeEscapedUrl(match[0]);
-        if (!seen.has(decoded) && isHighResFacebookImage(decoded)) {
-            seen.add(decoded);
-            images.push(decoded);
-        }
-    }
-
-    // Pattern 3: URI fields in JSON with explicit keys
-    const uriPattern = /"(?:uri|url|src|image_uri|full_image|photo_image|viewer_image|image\.uri|large_share_image|baseUrl)"\s*:\s*"(https?:[^"]+scontent[^"]+)"/gi;
     while ((match = uriPattern.exec(html)) !== null) {
         const decoded = decodeEscapedUrl(match[1]);
-        if (!seen.has(decoded) && isHighResFacebookImage(decoded)) {
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
+            seen.add(decoded);
+            images.push(decoded);
+        }
+    }
+
+    // Plain scontent URLs in meta/preload tags (NOT from JSON)
+    const plainPattern = /(?:content|href)=["'](https?:\/\/scontent[^"'\s<>\\]+)["']/gi;
+    while ((match = plainPattern.exec(html)) !== null) {
+        const decoded = decodeEscapedUrl(match[1]);
+        if (!seen.has(decoded) && isPostPhoto(decoded)) {
             seen.add(decoded);
             images.push(decoded);
         }
@@ -670,31 +730,38 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
         if (isLoginOnly) {
             console.log("[fb-photo] Desktop page: login wall detected (small page with no content)");
         } else {
-            // Extract images
+            // Extract images using multiple strategies, prioritizing structured data
+
+            // Priority 1: Subattachment data (most reliable for multi-photo posts)
+            const subImages = extractSubattachmentImages(html);
+
+            // Priority 2: OG images (always has the first photo)
             const ogImages = extractOgImages(html);
-            const scriptImages = extractScriptImages(html);
-            console.log(`[fb-photo] Desktop: ${ogImages.length} OG images, ${scriptImages.length} script images`);
-
-            // Separate post photos from profile pics/avatars
-            const postPhotos = scriptImages.filter(isPostPhoto);
             const ogPostPhotos = ogImages.filter(img => img.includes("scontent"));
-            console.log(`[fb-photo] Desktop: ${postPhotos.length} post photos, ${ogPostPhotos.length} OG post photos`);
 
-            // Add post photos first (from script data — these may have more photos on AWS)
-            for (const img of postPhotos) {
-                if (!allImages.includes(img)) allImages.push(img);
-            }
-            // Then OG images
-            for (const img of ogPostPhotos) {
-                if (!allImages.includes(img)) allImages.push(img);
-            }
+            // Priority 3: Generic script images (fallback)
+            const scriptImages = extractScriptImages(html);
 
-            // If we didn't find post-specific photos, add all non-tiny images
-            if (allImages.length === 0) {
-                for (const img of [...scriptImages, ...ogImages]) {
-                    if (!allImages.includes(img) && isHighResFacebookImage(img)) {
-                        allImages.push(img);
-                    }
+            console.log(`[fb-photo] Desktop: ${subImages.length} subattachment, ${ogPostPhotos.length} OG, ${scriptImages.length} script`);
+
+            if (subImages.length > 0) {
+                // Use subattachment images — these are the actual post photos
+                for (const img of subImages) {
+                    if (!allImages.includes(img)) allImages.push(img);
+                }
+                // Also add OG image if it's different (sometimes higher res)
+                for (const img of ogPostPhotos) {
+                    if (!allImages.includes(img)) allImages.push(img);
+                }
+            } else {
+                // No subattachment data — fall back to OG + script images
+                // Add OG images first (most reliable)
+                for (const img of ogPostPhotos) {
+                    if (!allImages.includes(img)) allImages.push(img);
+                }
+                // Then script images (filtered to post photos only)
+                for (const img of scriptImages) {
+                    if (!allImages.includes(img)) allImages.push(img);
                 }
             }
 
