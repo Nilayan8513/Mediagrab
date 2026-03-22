@@ -132,12 +132,16 @@ export function isFacebookPhotoUrl(url: string): boolean {
 
 /**
  * Fetch a Facebook page with full browser-like headers.
- * Sends cookies if available (needed for story.php URLs on server IPs).
- * If the first attempt redirects to login, retries with cookies.
+ *
+ * IMPORTANT: Cookies are NOT sent by default!
+ * When cookies are sent, Facebook returns the full logged-in page which
+ * includes news feed, sidebar, and suggested posts — all containing
+ * scontent images that pollute our results with random photos.
+ *
+ * Cookies should ONLY be sent as a retry when the first attempt
+ * gets redirected to a login page.
  */
-async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: string; finalUrl: string }> {
-    const cookies = getCachedFacebookCookies();
-
+async function fetchFacebookPage(url: string, mobile = false, useCookies = false): Promise<{ html: string; finalUrl: string }> {
     const baseHeaders: Record<string, string> = mobile ? {
         "User-Agent": MOBILE_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -152,8 +156,6 @@ async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: s
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
-        // These headers are ESSENTIAL for getting the full Facebook page
-        // Without them, Facebook returns a ~1.5KB JS-only shell
         "sec-ch-ua": '"Chromium";v="122", "Google Chrome";v="122"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
@@ -164,10 +166,15 @@ async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: s
         "Upgrade-Insecure-Requests": "1",
     };
 
-    // Always send cookies if available
     const headers = { ...baseHeaders };
-    if (cookies) {
-        headers["Cookie"] = cookies;
+
+    // Only send cookies when explicitly requested (retry after login redirect)
+    if (useCookies) {
+        const cookies = getCachedFacebookCookies();
+        if (cookies) {
+            headers["Cookie"] = cookies;
+            console.log("[fb-photo] Sending request WITH cookies");
+        }
     }
 
     const response = await fetch(url, {
@@ -182,20 +189,10 @@ async function fetchFacebookPage(url: string, mobile = false): Promise<{ html: s
     const html = await response.text();
     const finalUrl = response.url;
 
-    // Detect login redirect — Facebook redirects story.php URLs to /login/
-    // on server IPs even for public posts
+    // Detect login redirect
     if (finalUrl.includes("/login/") || finalUrl.includes("login.php")) {
         console.log(`[fb-photo] Redirected to login: ${finalUrl.substring(0, 100)}`);
-
-        // If we didn't have cookies, we can't do anything
-        if (!cookies) {
-            console.log("[fb-photo] No cookies available to bypass login redirect");
-            throw new Error("LOGIN_REQUIRED");
-        }
-
-        // If we had cookies but still got redirected, cookies might be expired
-        console.log("[fb-photo] Cookies were sent but still redirected — cookies may be expired");
-        throw new Error("LOGIN_REQUIRED");
+        throw new Error("LOGIN_REDIRECT");
     }
 
     return { html, finalUrl };
@@ -706,19 +703,38 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
     let uploader = "Facebook User";
     let desktopHtml = "";
 
-    // ── Strategy 1: Desktop page with full browser headers ──
-    // This is the primary strategy. With proper sec-ch-ua headers,
-    // Facebook returns a large page (~1.2MB) with embedded Relay data.
+    // ── Strategy 1: Desktop page WITHOUT cookies ──
+    // We do NOT send cookies first because authenticated pages include
+    // the entire news feed, sidebar, and suggested posts — all containing
+    // scontent images that pollute results with random photos.
+    let usedCookies = false;
     try {
-        console.log("[fb-photo] Strategy 1: Desktop page");
-        const { html, finalUrl } = await fetchFacebookPage(url, false);
+        console.log("[fb-photo] Strategy 1: Desktop page (no cookies)");
+        let html: string;
+        let finalUrl: string;
+
+        try {
+            ({ html, finalUrl } = await fetchFacebookPage(url, false, false));
+        } catch (err) {
+            // If we got a login redirect, retry WITH cookies
+            if (err instanceof Error && err.message === "LOGIN_REDIRECT") {
+                const hasCookies = getCachedFacebookCookies().length > 0;
+                if (!hasCookies) {
+                    console.log("[fb-photo] Login redirect and no cookies available");
+                    throw new Error("LOGIN_REQUIRED");
+                }
+                console.log("[fb-photo] Login redirect — retrying WITH cookies");
+                ({ html, finalUrl } = await fetchFacebookPage(url, false, true));
+                usedCookies = true;
+            } else {
+                throw err;
+            }
+        }
+
         desktopHtml = html;
-        console.log(`[fb-photo] Desktop page: ${html.length} bytes, final URL: ${finalUrl}`);
+        console.log(`[fb-photo] Desktop page: ${html.length} bytes, cookies=${usedCookies}, final URL: ${finalUrl}`);
 
         // Check for login wall
-        // IMPORTANT: The full 1.2MB Facebook page ALWAYS includes "login_form"
-        // in the header/sidebar — that does NOT mean it's a login-only page.
-        // A real login wall is a small page (<50KB) with no og:image or scontent data.
         const hasOgImage = html.includes("og:image");
         const hasScontent = html.includes("scontent");
         const isSmallPage = html.length < 50000;
@@ -730,7 +746,7 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
         if (isLoginOnly) {
             console.log("[fb-photo] Desktop page: login wall detected (small page with no content)");
         } else {
-            // Extract images using multiple strategies, prioritizing structured data
+            // Extract images using multiple strategies
 
             // Priority 1: Subattachment data (most reliable for multi-photo posts)
             const subImages = extractSubattachmentImages(html);
@@ -739,29 +755,41 @@ export async function scrapeFacebookPhotos(url: string): Promise<MediaInfo> {
             const ogImages = extractOgImages(html);
             const ogPostPhotos = ogImages.filter(img => img.includes("scontent"));
 
-            // Priority 3: Generic script images (fallback)
-            const scriptImages = extractScriptImages(html);
+            if (usedCookies) {
+                // AUTHENTICATED PAGE — be very strict!
+                // The page includes the entire news feed. Only use:
+                // 1. Subattachment images (specifically from the post's JSON)
+                // 2. OG image (always the first post photo)
+                // Do NOT use generic script image extraction
+                console.log(`[fb-photo] Authenticated page: ${subImages.length} subattachment, ${ogPostPhotos.length} OG`);
 
-            console.log(`[fb-photo] Desktop: ${subImages.length} subattachment, ${ogPostPhotos.length} OG, ${scriptImages.length} script`);
-
-            if (subImages.length > 0) {
-                // Use subattachment images — these are the actual post photos
-                for (const img of subImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
+                if (subImages.length > 0) {
+                    for (const img of subImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
                 }
-                // Also add OG image if it's different (sometimes higher res)
                 for (const img of ogPostPhotos) {
                     if (!allImages.includes(img)) allImages.push(img);
                 }
             } else {
-                // No subattachment data — fall back to OG + script images
-                // Add OG images first (most reliable)
-                for (const img of ogPostPhotos) {
-                    if (!allImages.includes(img)) allImages.push(img);
-                }
-                // Then script images (filtered to post photos only)
-                for (const img of scriptImages) {
-                    if (!allImages.includes(img)) allImages.push(img);
+                // UNAUTHENTICATED PAGE — cleaner, only has this post's data
+                const scriptImages = extractScriptImages(html);
+                console.log(`[fb-photo] Clean page: ${subImages.length} subattachment, ${ogPostPhotos.length} OG, ${scriptImages.length} script`);
+
+                if (subImages.length > 0) {
+                    for (const img of subImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    for (const img of ogPostPhotos) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                } else {
+                    for (const img of ogPostPhotos) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
+                    for (const img of scriptImages) {
+                        if (!allImages.includes(img)) allImages.push(img);
+                    }
                 }
             }
 
