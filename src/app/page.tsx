@@ -125,6 +125,8 @@ export default function Home() {
   const [downloadEta, setDownloadEta] = useState("");
   const [audioStatus, setAudioStatus] = useState<DownloadStatus>("idle");
   const [audioProgress, setAudioProgress] = useState<number | null>(null);
+  const [detectedPlatform, setDetectedPlatform] = useState<string | null>(null);
+  const [clearKey, setClearKey] = useState(0);
 
   // ─── Theme ────────────────────────────────────────────────────────────────────
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -155,6 +157,22 @@ export default function Home() {
     const item = mediaInfo?.items[index];
     if (item?.formats?.length) setSelectedFormat(item.formats[0].format_id);
   };
+
+  // ─── Clear / Reset ──────────────────────────────────────────────────────────
+  const handleClear = useCallback(() => {
+    setMediaInfo(null);
+    setActiveItemIndex(0);
+    setSelectedFormat("");
+    setError(null);
+    setDownloadStatus("idle");
+    setDownloadProgress(null);
+    setDownloadSpeed("");
+    setDownloadEta("");
+    setAudioStatus("idle");
+    setAudioProgress(null);
+    setDetectedPlatform(null);
+    setClearKey(k => k + 1);
+  }, []);
 
   // ─── Analyze ──────────────────────────────────────────────────────────────────
   const handleAnalyze = useCallback(async (url: string) => {
@@ -421,7 +439,11 @@ export default function Home() {
   const mobile = isMobile();
 
   return (
-    <div className="page-root" data-theme={theme}>
+    <div
+      className="page-root"
+      data-theme={theme}
+      {...((detectedPlatform || mediaInfo?.platform) ? { "data-platform": detectedPlatform || mediaInfo?.platform } : {})}
+    >
 
       {/* Ambient glows */}
       <div className="glow-layer" aria-hidden="true">
@@ -500,9 +522,11 @@ export default function Home() {
           {/* URL Input */}
           <div className="input-section">
             <UrlInput
+              key={clearKey}
               onAnalyze={handleAnalyze}
               isLoading={isAnalyzing}
               detectedPlatform={mediaInfo?.platform || null}
+              onPlatformDetected={setDetectedPlatform}
             />
           </div>
 
@@ -590,6 +614,22 @@ export default function Home() {
                   Android: check your <strong>Downloads</strong> folder.
                 </p>
               )}
+
+              {/* Clear / New Download button */}
+              <button
+                className="dl-btn-clear"
+                onClick={handleClear}
+                type="button"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  <line x1="10" y1="11" x2="10" y2="17"/>
+                  <line x1="14" y1="11" x2="14" y2="17"/>
+                </svg>
+                Clear · New Download
+              </button>
 
             </div>
           )}

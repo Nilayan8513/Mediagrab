@@ -35,6 +35,14 @@
   --glow-blue-color:   rgba(59, 130, 246, 0.14);
 
   color-scheme: dark;
+
+  /* Platform-dynamic tokens (overridden by data-platform) */
+  --platform-accent:      var(--accent);
+  --platform-accent-2:    var(--accent-2);
+  --platform-accent-soft: var(--accent-soft);
+  --platform-glow-1:      var(--glow-purple-color);
+  --platform-glow-2:      var(--glow-blue-color);
+  --platform-gradient:    linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
 }
 
 /* ─── Light Mode Token Overrides ─────────────────────────────────────────── */
@@ -74,6 +82,197 @@
   color-scheme: light;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Platform Color Themes — activated via data-platform attribute
+   Full UI transformation: background, surfaces, text, accents, glows.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * ── Instagram ──────────────────────────────────────────────────────────────
+ *    Vibrant gradient BG (purple → pink → orange → yellow)
+ *    Dark frosted-glass surfaces (glassmorphism)
+ *    Bright pink / orange accents
+ */
+[data-platform="instagram"] {
+  --bg-primary:        #1A0A1F;
+  --bg-secondary:      #1E0E24;
+  --bg-card:           rgba(255, 255, 255, 0.07);
+  --bg-input:          rgba(255, 255, 255, 0.08);
+  --bg-input-hover:    rgba(255, 255, 255, 0.12);
+  --bg-hover:          rgba(225, 48, 108, 0.08);
+  --bg-navbar:         rgba(20, 8, 26, 0.75);
+
+  --border-default:    rgba(255, 255, 255, 0.12);
+  --border-focus:      rgba(225, 48, 108, 0.60);
+
+  --text-primary:      #FFFFFF;
+  --text-secondary:    rgba(255, 255, 255, 0.70);
+  --text-muted:        rgba(255, 255, 255, 0.40);
+
+  --accent:            #E1306C;
+  --accent-2:          #F77737;
+  --accent-hover:      #C13584;
+  --accent-soft:       rgba(225, 48, 108, 0.15);
+  --accent-text:       #FFFFFF;
+
+  --glow-purple-color: rgba(193, 53, 132, 0.35);
+  --glow-blue-color:   rgba(247, 119, 55, 0.25);
+
+  --shadow-sm:         0 1px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md:         0 4px 24px rgba(0, 0, 0, 0.5);
+}
+[data-platform="instagram"][data-theme="light"] {
+  --bg-primary:        #FFF0F5;
+  --bg-secondary:      #FFE8F0;
+  --bg-card:           rgba(255, 255, 255, 0.75);
+  --bg-input:          rgba(255, 255, 255, 0.85);
+  --bg-input-hover:    rgba(255, 255, 255, 0.95);
+  --bg-hover:          rgba(225, 48, 108, 0.06);
+  --bg-navbar:         rgba(255, 240, 245, 0.80);
+
+  --border-default:    rgba(193, 53, 132, 0.18);
+  --border-focus:      rgba(193, 53, 132, 0.50);
+
+  --text-primary:      #1A0A1F;
+  --text-secondary:    #6B3A5C;
+  --text-muted:        #A87898;
+
+  --accent:            #C13584;
+  --accent-2:          #E1306C;
+  --accent-hover:      #833AB4;
+  --accent-soft:       rgba(193, 53, 132, 0.10);
+
+  --glow-purple-color: rgba(193, 53, 132, 0.12);
+  --glow-blue-color:   rgba(247, 119, 55, 0.08);
+
+  --shadow-sm:         0 1px 3px rgba(193, 53, 132, 0.10);
+  --shadow-md:         0 4px 20px rgba(193, 53, 132, 0.14);
+}
+
+/*
+ * ── X / Twitter ────────────────────────────────────────────────────────────
+ *    Deep black background (#000)
+ *    Minimal, high contrast UI
+ *    Subtle blue accent
+ */
+[data-platform="twitter"] {
+  --bg-primary:        #000000;
+  --bg-secondary:      #0A0A0A;
+  --bg-card:           rgba(255, 255, 255, 0.05);
+  --bg-input:          rgba(255, 255, 255, 0.06);
+  --bg-input-hover:    rgba(255, 255, 255, 0.10);
+  --bg-hover:          rgba(29, 161, 242, 0.06);
+  --bg-navbar:         rgba(0, 0, 0, 0.88);
+
+  --border-default:    rgba(255, 255, 255, 0.10);
+  --border-focus:      rgba(29, 161, 242, 0.55);
+
+  --text-primary:      #E7E9EA;
+  --text-secondary:    #71767B;
+  --text-muted:        #3B3F45;
+
+  --accent:            #1DA1F2;
+  --accent-2:          #1A8CD8;
+  --accent-hover:      #1A8CD8;
+  --accent-soft:       rgba(29, 161, 242, 0.12);
+  --accent-text:       #FFFFFF;
+
+  --glow-purple-color: rgba(29, 161, 242, 0.12);
+  --glow-blue-color:   rgba(29, 161, 242, 0.08);
+
+  --shadow-sm:         0 1px 3px rgba(0, 0, 0, 0.8);
+  --shadow-md:         0 4px 24px rgba(0, 0, 0, 0.9);
+}
+[data-platform="twitter"][data-theme="light"] {
+  --bg-primary:        #FFFFFF;
+  --bg-secondary:      #F7F9FA;
+  --bg-card:           rgba(247, 249, 250, 0.90);
+  --bg-input:          rgba(239, 243, 244, 0.90);
+  --bg-input-hover:    #FFFFFF;
+  --bg-hover:          rgba(29, 161, 242, 0.05);
+  --bg-navbar:         rgba(255, 255, 255, 0.92);
+
+  --border-default:    rgba(207, 217, 222, 0.60);
+  --border-focus:      rgba(29, 161, 242, 0.50);
+
+  --text-primary:      #0F1419;
+  --text-secondary:    #536471;
+  --text-muted:        #8B98A5;
+
+  --accent:            #1DA1F2;
+  --accent-2:          #1A8CD8;
+  --accent-hover:      #1A8CD8;
+  --accent-soft:       rgba(29, 161, 242, 0.08);
+
+  --glow-purple-color: rgba(29, 161, 242, 0.06);
+  --glow-blue-color:   rgba(29, 161, 242, 0.04);
+
+  --shadow-sm:         0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md:         0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+/*
+ * ── Facebook ───────────────────────────────────────────────────────────────
+ *    Clean white / light grey surfaces
+ *    Facebook blue accent
+ *    Soft, modern UI — forces "light" feel even in dark mode
+ */
+[data-platform="facebook"] {
+  --bg-primary:        #18191A;
+  --bg-secondary:      #242526;
+  --bg-card:           rgba(58, 59, 60, 0.60);
+  --bg-input:          rgba(58, 59, 60, 0.50);
+  --bg-input-hover:    rgba(58, 59, 60, 0.70);
+  --bg-hover:          rgba(24, 119, 242, 0.08);
+  --bg-navbar:         rgba(36, 37, 38, 0.92);
+
+  --border-default:    rgba(58, 59, 60, 0.80);
+  --border-focus:      rgba(24, 119, 242, 0.55);
+
+  --text-primary:      #E4E6EB;
+  --text-secondary:    #B0B3B8;
+  --text-muted:        #6A6C70;
+
+  --accent:            #1877F2;
+  --accent-2:          #2D88FF;
+  --accent-hover:      #166FE5;
+  --accent-soft:       rgba(24, 119, 242, 0.15);
+  --accent-text:       #FFFFFF;
+
+  --glow-purple-color: rgba(24, 119, 242, 0.18);
+  --glow-blue-color:   rgba(45, 136, 255, 0.12);
+
+  --shadow-sm:         0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md:         0 4px 24px rgba(0, 0, 0, 0.6);
+}
+[data-platform="facebook"][data-theme="light"] {
+  --bg-primary:        #F0F2F5;
+  --bg-secondary:      #FFFFFF;
+  --bg-card:           rgba(255, 255, 255, 0.95);
+  --bg-input:          rgba(240, 242, 245, 0.95);
+  --bg-input-hover:    #FFFFFF;
+  --bg-hover:          rgba(24, 119, 242, 0.05);
+  --bg-navbar:         rgba(255, 255, 255, 0.95);
+
+  --border-default:    rgba(0, 0, 0, 0.10);
+  --border-focus:      rgba(24, 119, 242, 0.50);
+
+  --text-primary:      #050505;
+  --text-secondary:    #65676B;
+  --text-muted:        #8A8D91;
+
+  --accent:            #1877F2;
+  --accent-2:          #2D88FF;
+  --accent-hover:      #166FE5;
+  --accent-soft:       rgba(24, 119, 242, 0.08);
+
+  --glow-purple-color: rgba(24, 119, 242, 0.06);
+  --glow-blue-color:   rgba(45, 136, 255, 0.04);
+
+  --shadow-sm:         0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md:         0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
 /* ─── Base ────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -83,7 +282,7 @@ body {
   font-family: var(--font-sora), system-ui, -apple-system, sans-serif;
   min-height: 100vh;
   overflow-x: hidden;
-  transition: background-color 0.35s ease, color 0.35s ease;
+  transition: background-color 0.6s ease, color 0.6s ease;
   margin: 0;
 }
 
@@ -97,7 +296,42 @@ body {
   overflow-x: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
-  transition: background-color 0.35s ease, color 0.35s ease;
+  transition: background-color 0.6s ease, color 0.6s ease;
+}
+
+/* Instagram gradient overlay — sits behind all content */
+.page-root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0;
+  background: linear-gradient(
+    135deg,
+    #833AB4 0%,
+    #C13584 25%,
+    #E1306C 50%,
+    #F77737 75%,
+    #FCAF45 100%
+  );
+  background-size: 200% 200%;
+  transition: opacity 0.8s ease;
+  pointer-events: none;
+}
+[data-platform="instagram"] .page-root::before,
+.page-root[data-platform="instagram"]::before {
+  opacity: 0.15;
+  animation: igGradientShift 8s ease infinite;
+}
+[data-platform="instagram"][data-theme="light"] .page-root::before,
+.page-root[data-platform="instagram"][data-theme="light"]::before {
+  opacity: 0.10;
+}
+
+@keyframes igGradientShift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* ─── Ambient Glows ───────────────────────────────────────────────────────── */
@@ -112,7 +346,7 @@ body {
   position: absolute;
   border-radius: 50%;
   filter: blur(90px);
-  transition: opacity 0.5s ease;
+  transition: background 0.8s ease, opacity 0.8s ease, transform 0.8s ease;
 }
 .glow-purple {
   width: 800px;
@@ -129,6 +363,38 @@ body {
   background: radial-gradient(ellipse, var(--glow-blue-color) 0%, transparent 65%);
 }
 
+/* When platform is active, amplify glows and pulse them */
+[data-platform] .glow-purple {
+  opacity: 1;
+  animation: glowPulse 3s ease-in-out infinite;
+}
+[data-platform] .glow-blue {
+  opacity: 1;
+  animation: glowPulse 3s ease-in-out infinite 1.5s;
+}
+/* Twitter: subtle glows (minimal aesthetic) */
+[data-platform="twitter"] .glow-purple,
+[data-platform="twitter"] .glow-blue {
+  opacity: 0.4;
+  animation: glowPulse 5s ease-in-out infinite;
+}
+
+/* ─── Platform-specific card / surface enhancements ──────────────────────── */
+/* Instagram: frosted glass cards */
+[data-platform="instagram"] .preview-glass-card,
+[data-platform="instagram"] .url-input-wrapper,
+[data-platform="instagram"] .feature-badge,
+[data-platform="instagram"] .platform-pill {
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+/* Facebook: clean solid cards in light mode */
+[data-platform="facebook"][data-theme="light"] .preview-glass-card {
+  backdrop-filter: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
 /* ─── Navbar ──────────────────────────────────────────────────────────────── */
 .navbar {
   width: 100%;
@@ -143,7 +409,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  transition: background 0.35s ease, border-color 0.35s ease;
+  transition: background 0.6s ease, border-color 0.6s ease;
 }
 .navbar-logo {
   display: flex;
@@ -219,18 +485,20 @@ body {
   margin: 0;
 }
 .gradient-text {
-  background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  transition: background 0.6s ease;
 }
 .sparkle {
-  background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
   font-size: 0.65em;
   font-style: normal;
+  transition: background 0.6s ease;
 }
 
 /* ─── Hero Sub ────────────────────────────────────────────────────────────── */
@@ -242,11 +510,12 @@ body {
   margin: 0;
 }
 .hero-highlight {
-  background: linear-gradient(90deg, #8B5CF6, #3B82F6);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
   font-weight: 600;
+  transition: background 0.6s ease;
 }
 
 /* ─── Feature Badges ──────────────────────────────────────────────────────── */
@@ -344,7 +613,7 @@ body {
   padding: 9px 18px;
   border-radius: 11px;
   border: none;
-  background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
   color: #FFFFFF;
   font-size: 14px;
   font-weight: 600;
@@ -478,7 +747,7 @@ body {
   color: var(--accent);
 }
 .quality-pill.active {
-  background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border-color: transparent;
   color: #FFFFFF;
 }
@@ -520,7 +789,7 @@ body {
   height: 48px;
   border-radius: 12px;
   border: none;
-  background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
   color: #FFFFFF;
   font-size: 15px;
   font-weight: 600;
@@ -612,7 +881,7 @@ body {
 .progress-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #8B5CF6, #3B82F6);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
   transition: width 0.4s ease;
 }
 .progress-meta {
@@ -620,6 +889,30 @@ body {
   justify-content: space-between;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* ─── Clear / Reset Button ────────────────────────────────────────────────── */
+.dl-btn-clear {
+  width: 100%;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+.dl-btn-clear:hover {
+  border-color: var(--error);
+  color: var(--error);
+  background: var(--error-bg);
 }
 
 /* ─── Merge Notice ────────────────────────────────────────────────────────── */
@@ -661,6 +954,10 @@ body {
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes glowPulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; }
 }
 .animate-fade-up {
   animation: fadeUp 0.35s ease forwards;

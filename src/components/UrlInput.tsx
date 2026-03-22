@@ -6,6 +6,7 @@ interface UrlInputProps {
   onAnalyze: (url: string) => void;
   isLoading: boolean;
   detectedPlatform: string | null;
+  onPlatformDetected?: (platform: string | null) => void;
 }
 
 const PLATFORM_ICONS: Record<string, ReactElement> = {
@@ -21,7 +22,7 @@ function quickDetectPlatform(url: string): string | null {
   return null;
 }
 
-export default function UrlInput({ onAnalyze, isLoading, detectedPlatform }: UrlInputProps) {
+export default function UrlInput({ onAnalyze, isLoading, detectedPlatform, onPlatformDetected }: UrlInputProps) {
   const [url, setUrl] = useState("");
   const [localPlatform, setLocalPlatform] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,7 +32,9 @@ export default function UrlInput({ onAnalyze, isLoading, detectedPlatform }: Url
 
   const handleChange = (val: string) => {
     setUrl(val);
-    setLocalPlatform(quickDetectPlatform(val));
+    const p = quickDetectPlatform(val);
+    setLocalPlatform(p);
+    onPlatformDetected?.(p);
   };
 
   const handlePaste = async () => {
@@ -73,7 +76,7 @@ export default function UrlInput({ onAnalyze, isLoading, detectedPlatform }: Url
             <button
               type="button"
               className="url-icon-btn"
-              onClick={() => { setUrl(""); setLocalPlatform(null); }}
+              onClick={() => { setUrl(""); setLocalPlatform(null); onPlatformDetected?.(null); }}
               aria-label="Clear URL"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
