@@ -1089,7 +1089,7 @@ async function analyzeYouTube(url: string): Promise<MediaInfo> {
       "--user-agent", USER_AGENT,
       "--extractor-retries", "3",
       "--socket-timeout", "30",
-      // YouTube-specific: extract best formats with audio
+      "--extractor-args", "youtube:player_client=tv;skip=hls,dash",
       "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
       url,
     ];
