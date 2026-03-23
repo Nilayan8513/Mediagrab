@@ -11,6 +11,7 @@ interface QualitySelectorProps {
     selectedFormat: string;
     onSelect: (formatId: string) => void;
     disabled?: boolean;
+    platform?: string;
 }
 
 function formatSize(bytes: number | null): string {
@@ -20,13 +21,16 @@ function formatSize(bytes: number | null): string {
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-export default function QualitySelector({ formats, selectedFormat, onSelect, disabled }: QualitySelectorProps) {
+export default function QualitySelector({ formats, selectedFormat, onSelect, disabled, platform }: QualitySelectorProps) {
     if (!formats || formats.length === 0) return null;
+
+    const isYouTube = platform === "youtube";
+    const usePills = formats.length <= 6 || isYouTube;
 
     return (
         <div className="animate-fade-up" id="quality-selector">
             <p className="quality-label">Quality</p>
-            {formats.length <= 5 ? (
+            {usePills ? (
                 <div className="quality-pills">
                     {formats.map((f) => (
                         <button
@@ -37,7 +41,11 @@ export default function QualitySelector({ formats, selectedFormat, onSelect, dis
                             disabled={disabled}
                             title={f.filesize ? `~${formatSize(f.filesize)}` : undefined}
                         >
-                            {f.has_audio ? "🔊 " : "📹 "}{f.quality}
+                            {isYouTube ? (
+                                f.quality
+                            ) : (
+                                <>{f.has_audio ? "🔊 " : "📹 "}{f.quality}</>
+                            )}
                         </button>
                     ))}
                 </div>

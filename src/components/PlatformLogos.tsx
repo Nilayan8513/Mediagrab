@@ -46,11 +46,20 @@ export function FacebookLogo({ size = 18, className }: LogoProps) {
 }
 
 export function PlatformLogo({ platform, size = 18 }: { platform: string; size?: number }) {
-    switch (platform) {
-
-        case "instagram": return <InstagramLogo size={size} />;
-        case "twitter": return <XLogo size={size} />;
-        case "facebook": return <FacebookLogo size={size} />;
-        default: return null;
-    }
+  switch (platform) {
+    case "instagram": return <InstagramLogo size={size} />;
+    case "twitter":   return <XLogo size={size} />;
+    case "facebook":  return <FacebookLogo size={size} />;
+    case "youtube":   return <YouTubeLogo size={size} />;
+    default:          return null;
+  }
+}
+export function YouTubeLogo({ size = 18, className }: LogoProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={className}
+      style={{ filter: "drop-shadow(0 1px 2px rgba(255,0,0,0.3))" }}>
+      <rect width="24" height="24" rx="5" fill="#FF0000" />
+      <polygon points="10,7 10,17 18,12" fill="white" />
+    </svg>
+  );
 }

@@ -532,10 +532,31 @@ export default function Home() {
 
           {/* Error */}
           {error && (
-            <p className="error-text animate-fade-up">
-              <span className="error-dot" aria-hidden="true" />
-              {error}
-            </p>
+            <div className="error-box animate-fade-up">
+              <div className="error-box-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+              </div>
+              <div className="error-box-content">
+                <span className="error-box-title">Something went wrong</span>
+                <span className="error-box-message">{error}</span>
+              </div>
+              <button
+                className="error-box-dismiss"
+                onClick={() => setError(null)}
+                aria-label="Dismiss error"
+                type="button"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
           )}
 
           {/* Supported platforms — shown only before any URL is analysed */}
@@ -547,6 +568,7 @@ export default function Home() {
                 { key: "instagram", name: "Instagram" },
                 { key: "twitter",   name: "X / Twitter" },
                 { key: "facebook",  name: "Facebook" },
+                { key: "youtube",   name: "YouTube" }, 
               ].map((p) => (
                 <span key={p.key} className="platform-pill">
                   <PlatformLogo platform={p.key} size={13} />
@@ -579,6 +601,7 @@ export default function Home() {
                     setDownloadProgress(null);
                   }}
                   disabled={downloadStatus === "downloading" || downloadStatus === "merging"}
+                  platform={mediaInfo?.platform}
                 />
               )}
 

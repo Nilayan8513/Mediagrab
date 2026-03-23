@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
 
         if (platform === "unknown") {
             return NextResponse.json(
-                { error: "Unsupported platform. We support Instagram, Twitter/X, and Facebook." },
+                { error: "Unsupported platform. We support Instagram, Twitter/X, and Facebook and YouTube." },
                 { status: 400 }
             );
         }
