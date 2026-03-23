@@ -8,6 +8,7 @@ const LABELS: Record<string, string> = {
     instagram: "Instagram",
     twitter: "Twitter / X",
     facebook: "Facebook",
+    youtube: "YouTube",
 };
 
 export default function PlatformBadge({ platform }: PlatformBadgeProps) {
