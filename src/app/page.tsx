@@ -568,7 +568,6 @@ export default function Home() {
                 { key: "instagram", name: "Instagram" },
                 { key: "twitter",   name: "X / Twitter" },
                 { key: "facebook",  name: "Facebook" },
-                { key: "youtube",   name: "YouTube" }, 
               ].map((p) => (
                 <span key={p.key} className="platform-pill">
                   <PlatformLogo platform={p.key} size={13} />

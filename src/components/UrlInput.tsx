@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, type ReactElement } from "react";
-import { InstagramLogo, XLogo, FacebookLogo, YouTubeLogo } from "./PlatformLogos";
+import { InstagramLogo, XLogo, FacebookLogo } from "./PlatformLogos";
 
 interface UrlInputProps {
   onAnalyze: (url: string) => void;
@@ -13,14 +13,12 @@ const PLATFORM_ICONS: Record<string, ReactElement> = {
   instagram: <InstagramLogo size={18} />,
   twitter:   <XLogo size={18} />,
   facebook:  <FacebookLogo size={18} />,
-  youtube:   <YouTubeLogo size={18} />,
 };
 
 function quickDetectPlatform(url: string): string | null {
   if (/instagram\.com/i.test(url)) return "instagram";
   if (/twitter\.com|x\.com/i.test(url)) return "twitter";
   if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
-  if (/youtube\.com\/(?:watch|shorts|live)|youtu\.be/i.test(url)) return "youtube";
   return null;
 }
 

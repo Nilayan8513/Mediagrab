@@ -24,8 +24,7 @@ function formatSize(bytes: number | null): string {
 export default function QualitySelector({ formats, selectedFormat, onSelect, disabled, platform }: QualitySelectorProps) {
     if (!formats || formats.length === 0) return null;
 
-    const isYouTube = platform === "youtube";
-    const usePills = formats.length <= 6 || isYouTube;
+    const usePills = formats.length <= 6;
 
     return (
         <div className="animate-fade-up" id="quality-selector">
@@ -41,11 +40,7 @@ export default function QualitySelector({ formats, selectedFormat, onSelect, dis
                             disabled={disabled}
                             title={f.filesize ? `~${formatSize(f.filesize)}` : undefined}
                         >
-                            {isYouTube ? (
-                                f.quality
-                            ) : (
-                                <>{f.has_audio ? "🔊 " : "📹 "}{f.quality}</>
-                            )}
+                            <>{f.has_audio ? "🔊 " : "📹 "}{f.quality}</>
                         </button>
                     ))}
                 </div>

@@ -55,7 +55,6 @@ export type Platform =
   | "instagram"
   | "twitter"
   | "facebook"
-  | "youtube"
   | "unknown";
 
 const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
@@ -71,10 +70,7 @@ const PLATFORM_PATTERNS: { platform: Platform; regex: RegExp }[] = [
     platform: "facebook",
     regex: /(?:facebook\.com\/(?:(?:.*\/)?(?:videos|posts|watch|reel|photo|photos)|reel\/|share\/|watch\/|photo\.php|permalink\.php|story\.php)|fb\.watch\/|fb\.me\/)/i,
   },
-  {
-    platform: "youtube",
-    regex: /(?:youtube\.com\/(?:watch|shorts|live)|youtu\.be\/)/i,
-  },
+
 ];
 
 export function detectPlatform(url: string): Platform {
@@ -205,10 +201,7 @@ export async function analyzeUrl(url: string): Promise<MediaInfo> {
     // Fallback to yt-dlp (filtered to direct mp4 only)
     return await analyzeTwitterYtDlp(url);
   }
-  // ── YouTube ──
-  if (platform === "youtube") {
-    return await analyzeYouTube(url);
-  }
+
   // ── Facebook ──
   if (platform === "facebook") {
     return await analyzeFacebook(url);
@@ -1072,156 +1065,7 @@ async function analyzeWithYtDlp(
     );
   });
 }
-// ─── YouTube: yt-dlp with quality selection ───────────────────────────────────
 
-async function analyzeYouTube(url: string): Promise<MediaInfo> {
-  return new Promise((resolve, reject) => {
-    const cookieArgs = getCookieArgs("yt-dlp");
-
-    const args = [
-      ...cookieArgs,
-      "--dump-single-json",
-      "--no-check-formats",
-      "--skip-download",
-      "--no-warnings",
-      "--no-check-certificates",
-      "--force-ipv4",
-      "--user-agent", USER_AGENT,
-      "--extractor-retries", "3",
-      "--socket-timeout", "30",
-      "--extractor-args", "youtube:player_client=tv;skip=hls,dash",
-      "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-      url,
-    ];
-
-    console.log("[youtube] Analyzing:", url);
-    const proc = spawn("yt-dlp", args);
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        const errLine = stderr.split("\n").find((l) => l.includes("ERROR")) || stderr.slice(0, 300);
-        reject(new Error(errLine || `yt-dlp exited with code ${code}`));
-        return;
-      }
-
-      try {
-        const data = JSON.parse(stdout);
-
-// ── 30-minute duration guard ──────────────────────────────────────────────
-const durationSecs = (data.duration as number) || 0;
-if (durationSecs > 30 * 60) {
-  reject(new Error(
-    "This video is longer than 30 minutes and cannot be downloaded. " +
-    "Only videos up to 30 minutes are supported."
-  ));
-  return;
-}
-
-const allFormats: Record<string, unknown>[] = data.formats || [];
-
-// Allowed quality labels — strictly capped at 1080p
-const ALLOWED_HEIGHTS = [1080, 720, 480, 360, 240, 144];
-const ALLOWED_LABELS = new Set(["1080p", "720p", "480p", "360p", "240p", "144p"]);
-
-// Get video formats with direct URLs
-const videoFormats = allFormats
-  .filter((f) => {
-    const vcodec = String(f.vcodec || "");
-    const hasVideo = vcodec && vcodec !== "none";
-    const url = String(f.url || "");
-    const height = (f.height as number) || 0;
-    // Only heights in our allowed list (drops 4K/1440p/2160p/4320p)
-    return hasVideo && url.startsWith("http") && ALLOWED_HEIGHTS.includes(height);
-  })
-  .map((f) => ({
-    format_id: String(f.format_id || ""),
-    quality: `${(f.height as number)}p`,   // Clean label: "1080p", "720p" etc
-    ext: String(f.ext || "mp4"),
-    filesize: null,                          // Don't expose file size
-    resolution: null,
-    vcodec: f.vcodec ? String(f.vcodec) : null,
-    acodec: f.acodec ? String(f.acodec) : null,
-    height: (f.height as number) || null,
-    fps: (f.fps as number) || null,
-    url: String(f.url || ""),
-    has_audio: !!(f.acodec && String(f.acodec) !== "none"),
-  }))
-  .sort((a, b) => (b.height || 0) - (a.height || 0));
-
-// Deduplicate by quality label — prefer mp4 > webm, then has_audio=true
-const seen = new Map<string, typeof videoFormats[0]>();
-for (const f of videoFormats) {
-  const existing = seen.get(f.quality);
-  if (!existing) {
-    seen.set(f.quality, f);
-  } else {
-    // Prefer mp4 over webm
-    const preferMp4 = f.ext === "mp4" && existing.ext !== "mp4";
-    // Prefer has_audio
-    const preferAudio = f.has_audio && !existing.has_audio;
-    if (preferMp4 || preferAudio) {
-      seen.set(f.quality, f);
-    }
-  }
-}
-
-// Final sorted list — highest quality first
-const uniqueFormats = Array.from(seen.values())
-  .filter((f) => ALLOWED_LABELS.has(f.quality))
-  .sort((a, b) => (b.height || 0) - (a.height || 0));
-
-// Best audio-only stream for merge (used when video-only format is selected)
-const audioFormats = allFormats
-  .filter((f) => {
-    const acodec = String(f.acodec || "");
-    const vcodec = String(f.vcodec || "none");
-    return acodec !== "none" && acodec !== "" && (vcodec === "none" || !vcodec);
-  })
-  .sort((a, b) => ((b.abr as number) || 0) - ((a.abr as number) || 0));
-const audioUrl = audioFormats.length > 0 ? String(audioFormats[0].url || "") : null;
-
-const thumbnail = String(data.thumbnail || "");
-const title = String(data.title || "YouTube Video").slice(0, 150);
-const uploader = String(data.uploader || data.channel || "Unknown");
-
-resolve({
-  platform: "youtube",
-  title,
-  uploader,
-  items: [
-    {
-      type: "video",
-      title,
-      thumbnail,
-      duration: durationSecs || null,
-      formats: uniqueFormats,
-      direct_url: null,
-      audio_url: audioUrl,
-      index: 0,
-    },
-  ],
-  original_url: url,
-});
-      } catch {
-        reject(new Error("Failed to parse YouTube video info"));
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`yt-dlp not found: ${err.message}`));
-    });
-
-    setTimeout(() => {
-      proc.kill();
-      reject(new Error("YouTube analysis timed out"));
-    }, 90000);
-  });
-}
 
 function parseYtDlpEntry(
   data: Record<string, unknown>,
