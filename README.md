@@ -21,25 +21,7 @@
 
 </div>
 
-<br />
 
-## ⚠️ Legal Disclaimer
-
-> **This project is intended strictly for personal and educational use.**
->
-> MediaGrab is designed to help users download **their own content** or content they have **explicit permission** to save. It is the user's sole responsibility to comply with the Terms of Service of each platform and all applicable copyright laws.
->
-> **The developer does not condone or encourage:**
-> - Downloading copyrighted content without authorization
-> - Scraping content that violates platform Terms of Service
-> - Redistribution of any downloaded media
-> - Circumventing access controls or authentication mechanisms
->
-> **By using this tool, you accept full legal responsibility for your actions.** This software is provided "as is" without warranty. The developer is not liable for any misuse.
-
-<br />
-
----
 
 ## 🎯 Intended Use Cases
 
@@ -290,13 +272,17 @@ MediaGrab/
 
 ## 📄 License & Disclaimer
 
-This project is for **personal & educational use only**.
-
-- You are solely responsible for how you use this tool
-- Always respect content creators' rights and each platform's Terms of Service
-- Do not use MediaGrab to download or redistribute copyrighted content without authorization
-- This tool should only be used to download content you own or have explicit permission to save
-- The developer assumes no liability for misuse of this software
+> **This project is intended strictly for personal and educational use.**
+>
+> MediaGrab is designed to help users download **their own content** or content they have **explicit permission** to save. It is the user's sole responsibility to comply with the Terms of Service of each platform and all applicable copyright laws.
+>
+> **The developer does not condone or encourage:**
+> - Downloading copyrighted content without authorization
+> - Scraping content that violates platform Terms of Service
+> - Redistribution of any downloaded media
+> - Circumventing access controls or authentication mechanisms
+>
+> **By using this tool, you accept full legal responsibility for your actions.** This software is provided "as is" without warranty. The developer is not liable for any misuse.
 
 <br />
 
