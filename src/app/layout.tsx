@@ -9,14 +9,18 @@ const sora = Sora({
 });
 
 export const metadata: Metadata = {
-  title: "MediaGrab — Download from Any Platform",
+  title: "MediaGrab — Personal Media Manager",
   description:
-    "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook. Free, fast, and private.",
-  keywords: ["social media downloader", "instagram downloader", "twitter downloader", "facebook downloader"],
+    "A self-hosted tool for managing and saving your own social media content. Built with Next.js, TypeScript, and FFmpeg.",
+  keywords: ["media manager", "self-hosted", "nextjs project", "educational", "portfolio"],
   openGraph: {
-    title: "MediaGrab — Download from Any Platform",
-    description: "Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.",
+    title: "MediaGrab — Personal Media Manager",
+    description: "Self-hosted media management tool built with Next.js and TypeScript.",
     type: "website",
+  },
+  robots: {
+    index: false,
+    follow: false,
   },
 };
 

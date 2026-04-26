@@ -6,9 +6,9 @@
 
 # MediaGrab
 
-### *Your All-in-One Social Media Downloader*
+### *Personal Media Bookmarking Tool*
 
-**Download videos, reels, photos & audio from Instagram, Twitter/X & Facebook — all from one sleek interface.**
+**A self-hosted utility for saving your own social media content — posts, reels, and photos you've uploaded or have permission to download.**
 
 <br />
 
@@ -19,21 +19,38 @@
 
 <br />
 
-<p>
-  <img src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white" alt="Instagram" />
-  <img src="https://img.shields.io/badge/Twitter%20/%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Twitter / X" />
-  <img src="https://img.shields.io/badge/Facebook-1877F2?style=for-the-badge&logo=facebook&logoColor=white" alt="Facebook" />
-</p>
-
-<br />
-
-[![Live Site](https://img.shields.io/badge/🌐_Live_Site-mediagrab.duckdns.org-4263eb?style=for-the-badge)](https://mediagrab.duckdns.org/)
-
----
-
 </div>
 
 <br />
+
+## ⚠️ Legal Disclaimer
+
+> **This project is intended strictly for personal and educational use.**
+>
+> MediaGrab is designed to help users download **their own content** or content they have **explicit permission** to save. It is the user's sole responsibility to comply with the Terms of Service of each platform and all applicable copyright laws.
+>
+> **The developer does not condone or encourage:**
+> - Downloading copyrighted content without authorization
+> - Scraping content that violates platform Terms of Service
+> - Redistribution of any downloaded media
+> - Circumventing access controls or authentication mechanisms
+>
+> **By using this tool, you accept full legal responsibility for your actions.** This software is provided "as is" without warranty. The developer is not liable for any misuse.
+
+<br />
+
+---
+
+## 🎯 Intended Use Cases
+
+- 📸 **Backing up your own posts** — Save copies of photos/videos you uploaded
+- 🎓 **Educational projects** — Learning web scraping, API integration, and full-stack development
+- 🗂️ **Archiving permitted content** — Save media you have explicit rights to
+- 🛠️ **Developer portfolio** — Demonstrates Next.js, TypeScript, FFmpeg.wasm, SSE streaming
+
+<br />
+
+---
 
 ## ✨ Features
 
@@ -46,7 +63,7 @@
 - 🖼️ **Photo Downloads** — High-res images & albums
 - 🎵 **Audio Extraction** — MP3 from any video
 - 📦 **Carousel ZIP** — All items in one click
-- 🔄 **Multi-Fallback** — Auto-retry with alternative scrapers
+- 🔄 **Multi-Fallback** — Auto-retry with alternative methods
 
 </td>
 <td width="50%">
@@ -56,7 +73,7 @@
 - 📱 **Mobile Friendly** — iOS Safari & Android Chrome
 - 📊 **Real-Time Progress** — Speed, ETA & percentage via SSE
 - 🖼️ **Rich Previews** — Thumbnails, titles & uploader info
-- ⚡ **Parallel Chunks** — Blazing fast large file downloads
+- ⚡ **Parallel Chunks** — Fast large file downloads
 
 </td>
 </tr>
@@ -73,10 +90,10 @@
 <td>
 
 ### 🛡️ Reliability
-- 🔁 **Instaloader → yt-dlp → Embed** fallback chain
-- 🐦 **Twitter Syndication API** — No auth needed
-- 🍪 **Session Support** — Authenticated Instagram access
+- 🔁 **Multi-method fallback chain**
+- 🐦 **Twitter Syndication API** — Public tweets only
 - 🐳 **Docker Ready** — One command deployment
+- 🔒 **Privacy First** — No data collection or tracking
 
 </td>
 </tr>
@@ -98,6 +115,8 @@
 
 </div>
 
+> **Note:** Only publicly available content or content you own/have permission to download should be accessed.
+
 <br />
 
 ---
@@ -110,7 +129,6 @@
 |-------|-------------|
 | **Frontend** | Next.js 16 · React 19 · TypeScript · Vanilla CSS · FFmpeg.wasm |
 | **Backend** | Node.js 20 · Next.js API Routes · SSE Progress Streaming |
-| **Scrapers** | yt-dlp · Instaloader · gallery-dl · Twitter Syndication API |
 | **Processing** | FFmpeg (server) · FFmpeg.wasm (browser) · JSZip |
 
 </div>
@@ -141,16 +159,6 @@
 │  GET  /api/progress ───► SSE real-time progress stream           │
 │  GET  /api/proxy ──────► CORS proxy (whitelisted CDN domains)    │
 │  GET  /api/thumbnail ──► Cached thumbnail proxy (24h TTL)        │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    EXTRACTION ENGINES                             │
-│                                                                  │
-│  yt-dlp (primary)  ·  Instaloader (Instagram photos)             │
-│  Twitter Syndication API  ·  FB Photo Scraper  ·  gallery-dl     │
-│                                                                  │
-│  Fallback chain: instaloader → yt-dlp → embed → gallery-dl      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,8 +180,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/Nilayan8513/social-media-downloader-backend.git
-cd social-media-downloader-backend
+git clone https://github.com/Nilayan8513/Mediagrab.git
+cd Mediagrab
 
 # Install dependencies
 npm install
@@ -184,6 +192,15 @@ npm run dev
 ```
 
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
+
+### Docker (Self-Hosted)
+
+```bash
+docker build -t mediagrab .
+docker run -p 3000:3000 mediagrab
+```
+
+> This is intended for **personal, self-hosted use** on your own machine or private server.
 
 <br />
 
@@ -213,8 +230,8 @@ MediaGrab/
 │   │   ├── PlatformBadge.tsx         # Platform indicator labels
 │   │   └── PlatformLogos.tsx         # SVG brand logos
 │   └── lib/
-│       ├── ytdlp.ts                  # Core orchestrator — platform detection & yt-dlp
-│       ├── instaloader.ts            # Instagram scraper — photos & carousels
+│       ├── ytdlp.ts                  # Core orchestrator — platform detection
+│       ├── instaloader.ts            # Instagram handler
 │       ├── twitter-scraper.ts        # Twitter Syndication API
 │       ├── facebook-photo.ts         # Facebook photo extractor
 │       └── ffmpeg-client.ts          # Browser FFmpeg — merge, extract, chunk downloads
@@ -251,22 +268,7 @@ MediaGrab/
 | **Domain Whitelisting** | Proxy only allows known CDN domains |
 | **Non-Root Docker** | Container runs as unprivileged `nextjs` user |
 | **Input Validation** | URL format verification before processing |
-
-<br />
-
----
-
-## 🤝 Contributing
-
-Contributions, issues and feature requests are welcome!
-
-```
-1. Fork the repository
-2. Create your branch        →  git checkout -b feature/amazing-feature
-3. Commit your changes       →  git commit -m "Add amazing feature"
-4. Push to the branch        →  git push origin feature/amazing-feature
-5. Open a Pull Request
-```
+| **No Data Collection** | No analytics, no tracking, no user data stored |
 
 <br />
 
@@ -290,7 +292,11 @@ Contributions, issues and feature requests are welcome!
 
 This project is for **personal & educational use only**.
 
-Always respect content creators' rights and each platform's Terms of Service. Do not use MediaGrab to download or redistribute copyrighted content without authorization.
+- You are solely responsible for how you use this tool
+- Always respect content creators' rights and each platform's Terms of Service
+- Do not use MediaGrab to download or redistribute copyrighted content without authorization
+- This tool should only be used to download content you own or have explicit permission to save
+- The developer assumes no liability for misuse of this software
 
 <br />
 
@@ -302,6 +308,6 @@ Always respect content creators' rights and each platform's Terms of Service. Do
 
 <img src="https://img.shields.io/badge/Made_with-❤️-red?style=for-the-badge" />
 <img src="https://img.shields.io/badge/Powered_by-Next.js-000?style=for-the-badge&logo=next.js" />
-<img src="https://img.shields.io/badge/Open_Source-💚-green?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Educational_Project-💚-green?style=for-the-badge" />
 
 </div>

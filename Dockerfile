@@ -60,7 +60,7 @@ COPY --from=builder /app/public ./public
 # Copy cookies.txt if it exists (needed for yt-dlp auth)
 COPY cookies.txt* ./
 
-# Cloud Run injects PORT env var; Next.js standalone respects it
+# Expose the default port
 EXPOSE 3000
 
 # Run as non-root user for security

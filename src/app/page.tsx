@@ -502,21 +502,21 @@ export default function Home() {
 
           <h1 className="hero-title">
             <span className="sparkle" aria-hidden="true">✦</span>
-            Save from{" "}
-            <span className="gradient-text">Any Platform</span>
+            Manage Your{" "}
+            <span className="gradient-text">Media</span>
             <span className="sparkle" aria-hidden="true">✦</span>
           </h1>
 
           <p className="hero-sub">
-            Download videos, reels, and photos from Instagram, Twitter/X, and Facebook.
+            Save your own videos, reels, and photos from your social media accounts.
             <br />
-            <span className="hero-highlight">Free, fast, and instant.</span>
+            <span className="hero-highlight">Personal, fast, and private.</span>
           </p>
 
           <div className="feature-badges">
-            <span className="feature-badge">🔒 Secure</span>
+            <span className="feature-badge">🔒 Private</span>
             <span className="feature-badge">⚡ Fast</span>
-            <span className="feature-badge">🤍 Free</span>
+            <span className="feature-badge">🛡️ Self-Hosted</span>
           </div>
 
           {/* URL Input */}
@@ -562,7 +562,7 @@ export default function Home() {
           {/* Supported platforms — shown only before any URL is analysed */}
           {!mediaInfo && (
             <div className="supported-strip animate-fade-up">
-              <span className="supported-label">🌐 Supported:</span>
+              <span className="supported-label">🌐 Works with:</span>
               {[
 
                 { key: "instagram", name: "Instagram" },
@@ -661,7 +661,7 @@ export default function Home() {
 
       {/* ── Footer ── */}
       <footer className="site-footer">
-        MediaGrab · Personal use only · Respect content creators
+        MediaGrab · For personal &amp; educational use only · Always respect content creators' rights
       </footer>
 
     </div>

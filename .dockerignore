@@ -6,3 +6,8 @@ downloads
 .env*
 .vscode
 .idea
+*.log
+*.html
+*.bat
+*.json.bak
+cloudbuild.yaml
